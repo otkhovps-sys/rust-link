@@ -300,6 +300,12 @@ impl Player {
         });
         *self.current_controls.lock().unwrap() = Some(Arc::clone(&controls));
         self.playing.store(true, Ordering::Relaxed);
+        if let Some(session) = self.session.upgrade() {
+            session.send(&OutgoingMessage::PlayerUpdate {
+                guild_id: self.guild_id.to_string(),
+                state: self.state(),
+            });
+        }
         self.emit(Event::TrackStartEvent {
             guild_id: self.guild_id.to_string(),
             track: track.clone(),

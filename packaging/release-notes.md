@@ -1,5 +1,10 @@
 Audio node tương thích **Lavalink v4**, viết bằng Rust, có cache audio cục bộ với dọn dẹp LRU và tự động backup lên OneDrive.
 
+## Sửa lỗi
+
+- Giữ nguyên cổng Discord voice trong endpoint (ví dụ `:2096`), tránh lỗi `4006: Session is no longer valid` do kết nối nhầm cổng.
+- Gửi vị trí phát và thời gian hiện tại trước `TrackStartEvent`, tránh thanh tiến độ nhảy đến cuối bài khi client chưa nhận bản cập nhật đầu tiên.
+
 ## Tải về
 
 | File | Nền tảng | Cách chạy |
@@ -19,6 +24,6 @@ Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 ## Lưu ý
 
-- Bản Windows mới được chạy thử bằng Wine, chưa thử trên máy Windows thật.
-- Chưa kiểm thử với voice server Discord và OneDrive thật; các bài test dùng server giả lập.
+- Bộ test gồm codec, cache, API, voice giả lập và OneDrive giả lập; test YouTube thật cần bật riêng.
+- Đã xác nhận kết nối Discord voice với DAVE trên Windows bằng bản 0.1.0 và client giữ cổng; bản này sửa trực tiếp việc giữ cổng trong node.
 - Chỉ filter `volume` có tác dụng; live stream YouTube chưa hỗ trợ.

@@ -138,6 +138,40 @@ fn urlencode(s: &str) -> String {
 }
 
 #[tokio::test]
+async fn track_start_has_current_player_state() {
+    use common::voice_mock::lavalink_ws;
+
+    let node = TestNode::start(|c| c.lavalink.player_update_interval = 3600).await;
+    let (_, encoded) = node.seed_cached_wav("start position", 1.0).await;
+    let (mut events, session_id) = lavalink_ws(&node).await;
+    let started_at = rust_link::util::now_millis() as u64;
+    let response = node
+        .patch(&format!("/v4/sessions/{session_id}/players/42"))
+        .json(&json!({"track": {"encoded": encoded}, "position": 250, "paused": true}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+
+    let mut state = None;
+    loop {
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if message["op"] == "playerUpdate" && message["guildId"] == "42" {
+            state = Some(message["state"].clone());
+        }
+        if message["type"] == "TrackStartEvent" {
+            let state = state.expect("TrackStartEvent must follow a fresh playerUpdate");
+            assert_eq!(state["position"], 250);
+            assert!(state["time"].as_u64().unwrap() >= started_at);
+            break;
+        }
+    }
+}
+
+#[tokio::test]
 async fn websocket_ready_players_and_resume() {
     let node = TestNode::start(|_| {}).await;
     let (_, encoded) = node.seed_cached_wav("resume tone", 1.0).await;
@@ -220,7 +254,11 @@ async fn websocket_ready_players_and_resume() {
     let ready = next_json(&mut ws).await;
     assert_eq!(ready["resumed"], true);
     assert_eq!(ready["sessionId"], session_id.as_str());
-    // The event buffered while detached is replayed right after ready.
+    // The initial state and start event buffered while detached are replayed in order.
+    let state = next_json(&mut ws).await;
+    assert_eq!(state["op"], "playerUpdate");
+    assert_eq!(state["guildId"], "42");
+    assert_eq!(state["state"]["position"], 0);
     let replayed = next_json(&mut ws).await;
     assert_eq!(replayed["op"], "event");
     assert_eq!(replayed["type"], "TrackStartEvent");
