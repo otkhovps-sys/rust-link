@@ -1,27 +1,47 @@
 name: Release
 
-# Push a tag such as v0.1.0 (matching `version` in Cargo.toml) to test, build the Linux and
-# Windows packages and publish them as a GitHub release.
+# Publishes the Linux and Windows packages as a GitHub release named after the version in
+# Cargo.toml (tag v<version>). Trigger it by pushing that tag, or run it manually from the
+# Actions tab ("Run workflow"): the tag is then created on the selected commit.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        name: Check tag and Cargo.toml version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          tag="v${version}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "${tag}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${tag}"
+            exit 1
+          fi
+          if gh release view "${tag}" > /dev/null 2>&1; then
+            echo "::error::release ${tag} already exists; bump the version in Cargo.toml"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
   test:
     name: Test
+    needs: prepare
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Check tag matches Cargo.toml version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version v${version}"
-            exit 1
-          fi
       - name: Install system packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake
       - name: Run tests
@@ -29,6 +49,7 @@ jobs:
 
   package:
     name: Package ${{ matrix.platform }}
+    needs: prepare
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -59,7 +80,7 @@ jobs:
 
   release:
     name: Publish release
-    needs: [test, package]
+    needs: [prepare, test, package]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -70,11 +91,11 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          sed "s/{{VERSION}}/${version}/g" packaging/release-notes.md > notes.md
+          sed "s/{{VERSION}}/${TAG#v}/g" packaging/release-notes.md > notes.md
           ls -l dist
-          gh release create "${GITHUB_REF_NAME}" dist/* \
-            --title "rust-link ${GITHUB_REF_NAME}" \
+          gh release create "${TAG}" dist/* \
+            --title "rust-link ${TAG}" \
             --notes-file notes.md \
-            --verify-tag
+            --target "${GITHUB_SHA}"

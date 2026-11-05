@@ -189,7 +189,10 @@ TARGET=x86_64-pc-windows-gnu scripts/package.sh
 
 ### Phát hành lên GitHub Releases
 
-Workflow `.github/workflows/release.yml` tự chạy test, build hai gói Linux và Windows rồi đăng lên Releases khi có tag dạng `v*`. Tag phải khớp `version` trong `Cargo.toml`:
+Workflow `.github/workflows/release.yml` chạy test, build hai gói Linux và Windows rồi đăng lên Releases với tag `v<version>` lấy từ `Cargo.toml`. Có hai cách kích hoạt:
+
+- **Thủ công:** vào tab **Actions** trên GitHub, chọn workflow **Release**, bấm **Run workflow**. Tag được tạo trên commit đã chọn.
+- **Bằng tag:** push tag khớp phiên bản, ví dụ `v0.1.0`.
 
 ```bash
 git tag v0.1.0
@@ -198,6 +201,8 @@ git tag v0.1.0
 ```bash
 git push origin v0.1.0
 ```
+
+Workflow từ chối chạy nếu Release cho phiên bản đó đã tồn tại. Muốn phát hành bản mới, tăng `version` trong `Cargo.toml` trước.
 
 ## 6. Dùng lại application.yml của Lavalink
 
