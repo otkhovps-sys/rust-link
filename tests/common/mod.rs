@@ -31,6 +31,7 @@ impl TestNode {
         config.cache.directory = dir.path().join("cache");
         config.cache.database = dir.path().join("cache/index.db");
         config.lavalink.player_update_interval = 1;
+        config.sources.ytdlp.auto_update = false;
         customize(&mut config);
         config.validate().unwrap();
 

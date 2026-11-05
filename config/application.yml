@@ -46,7 +46,12 @@ sources:
   ytdlpGeneric: true             # các URL khác: thử qua extractor của yt-dlp
   httpTimeoutSecs: 20
   ytdlp:
-    path: yt-dlp
+    # managed: rust-link tự tải yt-dlp chính thức vào managedDir và tự cập nhật.
+    # Muốn dùng yt-dlp đã cài sẵn thì ghi đường dẫn, ví dụ: path: yt-dlp
+    path: managed
+    managedDir: ./bin
+    autoUpdate: true             # YouTube đổi liên tục, yt-dlp cũ là hỏng phát nhạc
+    updateIntervalHours: 24
     format: "bestaudio[acodec=opus]/bestaudio/best"
     searchLimit: 10
     metadataTimeoutSecs: 30

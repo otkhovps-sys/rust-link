@@ -2,6 +2,7 @@
 
 pub mod http;
 pub mod ytdlp;
+pub mod ytdlp_update;
 
 use std::{
     future::Future,

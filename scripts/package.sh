@@ -3,6 +3,10 @@
 #
 #   scripts/package.sh                                   # Linux x86_64, binary tĩnh (musl) -> .tar.gz
 #   TARGET=x86_64-pc-windows-gnu scripts/package.sh      # Windows x86_64 (MinGW)          -> .zip
+#   TARGET=aarch64-unknown-linux-musl scripts/package.sh # Linux ARM64 tĩnh                -> .tar.gz
+#
+# Build chéo sang ARM64 từ máy x86_64 cần cargo-zigbuild và zig (pip install ziglang cargo-zigbuild).
+# Có qemu-aarch64-static thì file chạy ARM64 được chạy thử bằng giả lập.
 #
 # Kết quả: dist/rust-link-<version>-<platform>.{tar.gz|zip} (+ .sha256)
 set -euo pipefail
@@ -20,8 +24,20 @@ esac
 NAME="rust-link-${VERSION}-${PLATFORM}"
 STAGE="dist/${NAME}"
 
-echo ">> build ${TARGET} (release)"
-cargo build --release --locked --target "$TARGET"
+BUILD=(cargo build)
+case "$TARGET" in
+  *-linux-musl)
+    # audiopus_sys chọn kiểu link theo máy build: ép libopus tĩnh cho file chạy musl.
+    export LIBOPUS_STATIC=1 LIBOPUS_NO_PKG=1
+    if [[ "${TARGET%%-*}" != "$(uname -m)" ]]; then
+      command -v cargo-zigbuild > /dev/null || { echo "cargo-zigbuild is required to cross-compile ${TARGET}" >&2; exit 1; }
+      BUILD=(cargo zigbuild)
+    fi
+    ;;
+esac
+
+echo ">> build ${TARGET} (release, ${BUILD[*]})"
+"${BUILD[@]}" --release --locked --target "$TARGET"
 BIN="target/${TARGET}/release/${EXE}"
 
 echo ">> stage ${STAGE}"
@@ -53,16 +69,25 @@ esac
 
 echo ">> smoke test"
 RUNNER=()
+SKIP_SMOKE=0
 if [[ "$PLATFORM" == windows-* ]]; then
   WINE=$(command -v wine64 || command -v wine || ls /usr/lib/wine/wine64 2>/dev/null || true)
   if [[ -z "$WINE" ]]; then
     echo "   (wine not found, skipping smoke test)"
+    SKIP_SMOKE=1
   else
     RUNNER=("$WINE")
     export WINEDEBUG=-all
   fi
+elif [[ "$TARGET" == aarch64-* && "$(uname -m)" != aarch64 ]]; then
+  if command -v qemu-aarch64-static > /dev/null; then
+    RUNNER=(qemu-aarch64-static)
+  else
+    echo "   (qemu-aarch64-static not found, skipping smoke test)"
+    SKIP_SMOKE=1
+  fi
 fi
-if [[ "$PLATFORM" != windows-* || ${#RUNNER[@]} -gt 0 ]]; then
+if [[ "$SKIP_SMOKE" == 0 ]]; then
   (cd "$STAGE" && "${RUNNER[@]}" "./${EXE}" --version && "${RUNNER[@]}" "./${EXE}" check-config > /dev/null)
   rm -rf "$STAGE/logs" "$STAGE/data"
 fi

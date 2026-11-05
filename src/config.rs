@@ -184,11 +184,19 @@ impl Default for SourcesConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct YtDlpConfig {
+    /// Executable, or `managed` to let rust-link download and update its own copy.
     pub path: String,
     pub format: String,
     pub search_limit: usize,
     pub metadata_timeout_secs: u64,
     pub extra_args: Vec<String>,
+    /// Update yt-dlp on a schedule (`yt-dlp -U`, or a fresh managed download).
+    pub auto_update: bool,
+    pub update_interval_hours: u64,
+    /// Where the managed yt-dlp lives (`path: managed`).
+    pub managed_dir: PathBuf,
+    /// Release download base used for the managed yt-dlp.
+    pub update_url: String,
 }
 
 impl Default for YtDlpConfig {
@@ -199,6 +207,10 @@ impl Default for YtDlpConfig {
             search_limit: 10,
             metadata_timeout_secs: 30,
             extra_args: Vec::new(),
+            auto_update: true,
+            update_interval_hours: 24,
+            managed_dir: PathBuf::from("bin"),
+            update_url: "https://github.com/yt-dlp/yt-dlp/releases/latest/download".into(),
         }
     }
 }

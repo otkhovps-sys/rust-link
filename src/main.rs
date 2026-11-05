@@ -42,6 +42,8 @@ enum Command {
     },
     /// Validate the configuration and exit.
     CheckConfig,
+    /// Update yt-dlp now (managed download, or `yt-dlp -U`) and exit.
+    UpdateYtdlp,
 }
 
 #[tokio::main]
@@ -58,6 +60,11 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config).await,
+        Command::UpdateYtdlp => {
+            let outcome = rust_link::source::ytdlp_update::update(&config.sources.ytdlp).await?;
+            println!("{outcome}");
+            Ok(())
+        }
         Command::CheckConfig => {
             println!("{config:#?}");
             println!("configuration OK");

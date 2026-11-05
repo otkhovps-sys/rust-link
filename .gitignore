@@ -5,3 +5,4 @@ config/onedrive.json
 /dist
 /logs
 .ccr-ca.crt
+/docker-bin

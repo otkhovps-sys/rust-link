@@ -110,6 +110,10 @@ pub async fn build(config: AppConfig, shutdown: CancellationToken) -> anyhow::Re
     let index = CacheIndex::open(&cache_cfg.database)
         .await
         .with_context(|| format!("cannot open cache index {}", cache_cfg.database.display()))?;
+    if let Err(e) = crate::source::ytdlp_update::ensure_installed(&config.sources.ytdlp).await {
+        warn!(error = %format!("{e:#}"), "cannot install the managed yt-dlp; YouTube and search will fail until it is available");
+    }
+    crate::source::ytdlp_update::spawn_auto_update(config.sources.ytdlp.clone(), shutdown.clone());
     let sources = Arc::new(SourceManager::new(&config.sources, Some(index.clone()))?);
     let cache = CacheManager::new(cache_cfg.clone(), index, Arc::clone(&sources), onedrive.clone());
     cache.reconcile().await?;

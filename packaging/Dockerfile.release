@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1
+# Image phát hành đa kiến trúc (linux/amd64, linux/arm64), dựng từ file chạy tĩnh có sẵn:
+#   docker-bin/amd64/rust-link  (gói linux-x86_64)
+#   docker-bin/arm64/rust-link  (gói linux-aarch64)
+# Workflow Release chuẩn bị thư mục docker-bin rồi chạy:
+#   docker buildx build -f packaging/Dockerfile.release --platform linux/amd64,linux/arm64 .
+
+FROM debian:bookworm-slim
+ARG TARGETARCH
+# Deno là JavaScript runtime yt-dlp cần cho YouTube. yt-dlp do rust-link tự tải và tự cập
+# nhật vào /data/bin (sources.ytdlp.path: managed).
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd -g 322 rustlink \
+ && useradd -u 322 -g rustlink -d /opt/rust-link -s /usr/sbin/nologin rustlink \
+ && mkdir -p /opt/rust-link /data/cache /data/bin \
+ && chown -R rustlink:rustlink /opt/rust-link /data
+COPY --chmod=0755 docker-bin/${TARGETARCH}/rust-link /opt/rust-link/rust-link
+COPY config/application.yml /opt/rust-link/application.yml
+RUN sed -i -e 's#credentialsFile: config/onedrive.json#credentialsFile: /data/onedrive.json#' \
+           -e 's#managedDir: ./bin#managedDir: /data/bin#' /opt/rust-link/application.yml \
+ && grep -q 'managedDir: /data/bin' /opt/rust-link/application.yml
+WORKDIR /opt/rust-link
+USER rustlink
+VOLUME ["/data"]
+EXPOSE 2333
+ENTRYPOINT ["/opt/rust-link/rust-link"]
+LABEL org.opencontainers.image.source="https://github.com/otkhovps-sys/rust-link" \
+      org.opencontainers.image.description="Lavalink v4 compatible audio node with local cache and OneDrive backup" \
+      org.opencontainers.image.licenses="MIT"

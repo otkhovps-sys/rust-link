@@ -4,6 +4,7 @@
 //! yt-dlp options.
 
 use std::{
+    path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
@@ -59,15 +60,21 @@ pub enum Resolved {
 
 pub struct YtDlp {
     cfg: YtDlpConfig,
+    program: PathBuf,
 }
 
 impl YtDlp {
     pub fn new(cfg: YtDlpConfig) -> Self {
-        Self { cfg }
+        let program = super::ytdlp_update::program_path(&cfg);
+        Self { cfg, program }
+    }
+
+    fn program_name(&self) -> String {
+        self.program.display().to_string()
     }
 
     fn command(&self) -> Command {
-        let mut cmd = Command::new(&self.cfg.path);
+        let mut cmd = Command::new(&self.program);
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -84,7 +91,7 @@ impl YtDlp {
             .arg("--")
             .arg(target);
         let child = cmd.spawn().map_err(|source| SourceError::Spawn {
-            program: self.cfg.path.clone(),
+            program: self.program_name(),
             source,
         })?;
         let timeout = self.cfg.metadata_timeout_secs.max(5);
@@ -153,7 +160,7 @@ impl YtDlp {
         .arg("--")
         .arg(url);
         let mut child = cmd.spawn().map_err(|source| SourceError::Spawn {
-            program: self.cfg.path.clone(),
+            program: self.program_name(),
             source,
         })?;
         let stdout = child.stdout.take().expect("stdout is piped");
