@@ -173,6 +173,9 @@ pub struct SourcesConfig {
     /// Deezer track (LavaSrc `providers`). `%ISRC%` and `%QUERY%` (title + artist) are
     /// substituted; templates with `%ISRC%` are skipped for tracks without one.
     pub mirror_providers: Vec<String>,
+    /// Reuse `/v4/loadtracks` results of searches and music-service links for this long
+    /// (0 = off). Skips yt-dlp and the remote APIs for repeated requests.
+    pub load_cache_ttl_secs: u64,
 }
 
 impl Default for SourcesConfig {
@@ -188,6 +191,7 @@ impl Default for SourcesConfig {
             apple_music: AppleMusicConfig::default(),
             deezer: DeezerConfig::default(),
             mirror_providers: vec!["ytsearch:\"%ISRC%\"".into(), "ytsearch:%QUERY%".into()],
+            load_cache_ttl_secs: 6 * 3600,
         }
     }
 }

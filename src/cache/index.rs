@@ -397,6 +397,37 @@ impl CacheIndex {
         Ok(())
     }
 
+    /// Cached `/v4/loadtracks` result younger than `max_age_ms`.
+    pub async fn get_load(&self, identifier: &str, max_age_ms: i64) -> sqlx::Result<Option<String>> {
+        sqlx::query_scalar("SELECT result FROM load_cache WHERE identifier = ? AND created_at >= ?")
+            .bind(identifier)
+            .bind(crate::util::now_millis() - max_age_ms)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn put_load(&self, identifier: &str, result: &str) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO load_cache (identifier, result, created_at) VALUES (?, ?, ?) \
+             ON CONFLICT(identifier) DO UPDATE SET result = excluded.result, created_at = excluded.created_at",
+        )
+        .bind(identifier)
+        .bind(result)
+        .bind(crate::util::now_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Drop load results older than `max_age_ms`.
+    pub async fn purge_loads(&self, max_age_ms: i64) -> sqlx::Result<u64> {
+        let done = sqlx::query("DELETE FROM load_cache WHERE created_at < ?")
+            .bind(crate::util::now_millis() - max_age_ms)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected())
+    }
+
     pub async fn state_get(&self, key: &str) -> sqlx::Result<Option<String>> {
         sqlx::query_scalar("SELECT value FROM node_state WHERE key = ?")
             .bind(key)

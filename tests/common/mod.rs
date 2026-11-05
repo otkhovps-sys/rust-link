@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod fake_ytdlp;
 pub mod media_server;
 pub mod voice_mock;
 

@@ -5,7 +5,6 @@
 mod common;
 
 use std::{
-    path::Path,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -22,8 +21,9 @@ use axum::{
 };
 use base64::Engine;
 use common::{
+    fake_ytdlp::{FakeYtDlp, TWO_CANDIDATES},
     voice_mock::{lavalink_ws, start_voice_server, wait_event},
-    write_wav, TestNode,
+    TestNode,
 };
 use rust_link::audio::crypto::EncryptionMode;
 use serde_json::{json, Value};
@@ -178,28 +178,6 @@ async fn start_mock_apis(counters: Counters) -> String {
     base
 }
 
-/// yt-dlp stand-in: searches return a wrong (10 h) and a right (2 s) candidate; downloads
-/// print a 2 s WAV file. Every invocation is appended to `log`.
-fn fake_ytdlp(dir: &Path) -> (String, std::path::PathBuf) {
-    let wav = dir.join("tone.wav");
-    write_wav(&wav, 48_000, 2, 2.0);
-    let log = dir.join("ytdlp.log");
-    let script = dir.join("yt-dlp");
-    let search = r#"{"_type":"playlist","entries":[{"_type":"url","ie_key":"Youtube","id":"aaaaaaaaaaa","title":"10 hour loop","duration":36000.0,"channel":"x"},{"_type":"url","ie_key":"Youtube","id":"bbbbbbbbbbb","title":"Official audio","duration":2.0,"channel":"y"}]}"#;
-    std::fs::write(
-        &script,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  *--dump-single-json*) echo '{search}' ;;\n  *) cat '{}' ;;\nesac\n",
-            log.display(),
-            wav.display()
-        ),
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    (script.display().to_string(), log)
-}
-
 async fn mirror_node(base: &str, ytdlp: &str) -> TestNode {
     let base = base.to_string();
     let ytdlp = ytdlp.to_string();
@@ -232,8 +210,8 @@ async fn loads_spotify_apple_music_and_deezer_links() {
     let counters = Counters::default();
     let base = start_mock_apis(counters.clone()).await;
     let dir = tempfile::tempdir().unwrap();
-    let (ytdlp, _) = fake_ytdlp(dir.path());
-    let node = mirror_node(&base, &ytdlp).await;
+    let ytdlp = FakeYtDlp::install(dir.path(), TWO_CANDIDATES, 2.0);
+    let node = mirror_node(&base, &ytdlp.path).await;
 
     let info: Value = node.get("/v4/info").send().await.unwrap().json().await.unwrap();
     for name in ["spotify", "applemusic", "deezer"] {
@@ -355,8 +333,8 @@ async fn loads_spotify_apple_music_and_deezer_links() {
 async fn plays_mirrored_track_through_matched_youtube_video() {
     let base = start_mock_apis(Counters::default()).await;
     let dir = tempfile::tempdir().unwrap();
-    let (ytdlp, log) = fake_ytdlp(dir.path());
-    let node = mirror_node(&base, &ytdlp).await;
+    let ytdlp = FakeYtDlp::install(dir.path(), TWO_CANDIDATES, 2.0);
+    let node = mirror_node(&base, &ytdlp.path).await;
     let (endpoint, _voice, mut frames) = start_voice_server(EncryptionMode::AeadAes256GcmRtpSize).await;
     let (mut events, session_id) = lavalink_ws(&node).await;
 
@@ -392,16 +370,15 @@ async fn plays_mirrored_track_through_matched_youtube_video() {
         );
     }
 
-    let calls = std::fs::read_to_string(&log).unwrap();
-    let searches: Vec<&str> = calls.lines().filter(|l| l.contains("--dump-single-json")).collect();
-    assert_eq!(searches.len(), 1, "the match is remembered: {calls}");
+    let searches = ytdlp.searches();
+    assert_eq!(searches.len(), 1, "the match is remembered: {:?}", ytdlp.calls());
     assert!(
         searches[0].contains("ytsearch5:\"USTEST000001\""),
         "ISRC searched first: {}",
         searches[0]
     );
-    let downloads: Vec<&str> = calls.lines().filter(|l| l.contains("-o -")).collect();
-    assert_eq!(downloads.len(), 1, "second play is a cache hit: {calls}");
+    let downloads = ytdlp.downloads();
+    assert_eq!(downloads.len(), 1, "second play is a cache hit: {:?}", ytdlp.calls());
     assert!(
         downloads[0].contains("watch?v=bbbbbbbbbbb"),
         "duration-matched candidate: {}",

@@ -12,7 +12,10 @@ use std::{
     collections::HashMap,
     future::Future,
     io::{self, Read},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use bytes::{Buf, Bytes};
@@ -240,6 +243,58 @@ pub struct SourceManager {
     spotify: Option<SpotifyClient>,
     apple_music: Option<AppleMusicClient>,
     deezer: Option<DeezerClient>,
+    load_cache_writes: AtomicU64,
+}
+
+/// Search prefixes whose results are worth caching.
+const CACHED_SEARCH_PREFIXES: [&str; 7] = [
+    "ytsearch:",
+    "ytmsearch:",
+    "scsearch:",
+    "spsearch:",
+    "amsearch:",
+    "dzsearch:",
+    "dzisrc:",
+];
+
+/// Load-cache key: searches are case and whitespace insensitive, links are taken as-is.
+/// `None` for identifiers that should always be resolved fresh (cache search, plain HTTP
+/// files and radio streams).
+fn load_cache_key(identifier: &str) -> Option<String> {
+    for prefix in CACHED_SEARCH_PREFIXES {
+        if let Some(query) = strip_prefix_ci(identifier, prefix) {
+            let query = query.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+            return (!query.is_empty()).then(|| format!("{prefix}{query}"));
+        }
+    }
+    if identifier.starts_with("spotify:") {
+        return Some(identifier.to_string());
+    }
+    let url = Url::parse(identifier).ok()?;
+    let host = url.host_str()?.trim_start_matches("www.").to_ascii_lowercase();
+    let music_service = [
+        "youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "soundcloud.com",
+        "open.spotify.com",
+        "music.apple.com",
+        "deezer.com",
+    ]
+    .contains(&host.as_str());
+    music_service.then(|| identifier.to_string())
+}
+
+fn cacheable_result(result: &LoadResult) -> bool {
+    let tracks: &[Track] = match result {
+        LoadResult::Track(track) => std::slice::from_ref(track),
+        LoadResult::Playlist(playlist) => &playlist.tracks,
+        LoadResult::Search(tracks) => tracks,
+        LoadResult::Empty(_) | LoadResult::Error(_) => return false,
+    };
+    // Live streams end; their metadata goes stale.
+    !tracks.is_empty() && tracks.iter().all(|t| !t.info.is_stream)
 }
 
 impl SourceManager {
@@ -259,6 +314,7 @@ impl SourceManager {
             deezer: cfg.deezer.enabled.then(|| DeezerClient::new(cfg.deezer.clone(), api)),
             cfg: cfg.clone(),
             index,
+            load_cache_writes: AtomicU64::new(0),
         })
     }
 
@@ -307,13 +363,37 @@ impl SourceManager {
         if identifier.is_empty() {
             return LoadResult::empty();
         }
-        match self.load_inner(identifier).await {
+        let ttl_ms = self.cfg.load_cache_ttl_secs.saturating_mul(1000).min(i64::MAX as u64) as i64;
+        let cache = match (&self.index, load_cache_key(identifier)) {
+            (Some(index), Some(key)) if ttl_ms > 0 => Some((index, key)),
+            _ => None,
+        };
+        if let Some((index, key)) = &cache {
+            if let Ok(Some(json)) = index.get_load(key, ttl_ms).await {
+                if let Ok(result) = serde_json::from_str::<LoadResult>(&json) {
+                    debug!(identifier, "loadtracks answered from the load cache");
+                    return result;
+                }
+            }
+        }
+        let result = match self.load_inner(identifier).await {
             Ok(result) => result,
             Err(e) => {
                 warn!(identifier, error = %e, "track loading failed");
-                LoadResult::error(e.to_string(), e.severity())
+                return LoadResult::error(e.to_string(), e.severity());
+            }
+        };
+        if let (Some((index, key)), true) = (&cache, cacheable_result(&result)) {
+            if let Ok(json) = serde_json::to_string(&result) {
+                if let Err(e) = index.put_load(key, &json).await {
+                    debug!(error = %e, "cannot store load result");
+                }
+                if self.load_cache_writes.fetch_add(1, Ordering::Relaxed) % 200 == 0 {
+                    let _ = index.purge_loads(ttl_ms).await;
+                }
             }
         }
+        result
     }
 
     /// First playable track for `identifier` (player update with `track.identifier`).
@@ -722,6 +802,28 @@ mod tests {
             (None, Some("PLabc".into()))
         );
         assert_eq!(ids("https://www.youtube.com/watch?v=short").0, None);
+    }
+
+    #[test]
+    fn load_cache_keys() {
+        assert_eq!(
+            load_cache_key("YTSearch:  Hello   World ").as_deref(),
+            Some("ytsearch:hello world")
+        );
+        assert_eq!(
+            load_cache_key("spsearch:Sơn Tùng").as_deref(),
+            Some("spsearch:sơn tùng")
+        );
+        assert_eq!(load_cache_key("ytsearch:   "), None);
+        assert_eq!(load_cache_key("cachesearch:x"), None);
+        assert!(load_cache_key("https://open.spotify.com/track/abc").is_some());
+        assert!(load_cache_key("https://www.youtube.com/watch?v=dQw4w9WgXcQ").is_some());
+        assert!(load_cache_key("spotify:album:abc").is_some());
+        assert_eq!(
+            load_cache_key("https://radio.example/live.mp3"),
+            None,
+            "plain HTTP is never cached"
+        );
     }
 
     #[test]
