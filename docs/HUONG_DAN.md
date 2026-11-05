@@ -318,7 +318,7 @@ Lavalink4NET, Lavalink-Client cho JDA, DisGo và các thư viện khác khai bá
 - **Discord E2EE (DAVE):** Discord yêu cầu mã hóa đầu-cuối cho voice. rust-link chỉ bật DAVE khi client gửi kèm `voice.channelId`, việc mà các client hỗ trợ Lavalink 4.1+ đã làm. Client quá cũ không gửi trường này thì Discord có thể đóng kết nối với mã 4017, bot sẽ nhận `WebSocketClosedEvent`.
 - **Tìm kiếm:** dùng `ytsearch:`, `ytmsearch:` (xử lý như `ytsearch:`), `scsearch:`, `spsearch:` (Spotify), `amsearch:` (Apple Music), `dzsearch:` (Deezer), `dzisrc:` (Deezer theo mã ISRC), `cachesearch:` (chỉ tìm trong cache), hoặc dán thẳng URL.
 - **Nhiều node:** có thể khai báo rust-link song song với Lavalink cũ trong danh sách node của client để chuyển dần.
-- **Filter:** hỗ trợ đủ 10 filter của Lavalink v4: `volume`, `equalizer` (15 band), `karaoke`, `timescale` (speed/pitch/rate, dùng cho nightcore và vaporwave), `tremolo`, `vibrato`, `rotation` (8D), `distortion`, `channelMix`, `lowPass`. Filter mới có hiệu lực sau khoảng `audio.frameBufferMs` (mặc định 0,4 giây), lúc phần âm thanh đã nằm trong bộ đệm phát hết. Khi bật `timescale`, vị trí bài hát vẫn tính theo thời gian của bài, nên thanh tiến độ trên bot chạy nhanh hoặc chậm theo `speed × rate`. `pluginFilters` được lưu và trả lại nhưng không xử lý, vì rust-link không chạy plugin của Lavalink. Muốn khóa filter nào thì đặt `false` trong `lavalink.filters` (hoặc `lavalink.server.filters` nếu dùng file của Lavalink).
+- **Filter:** hỗ trợ đủ 10 filter của Lavalink v4: `volume`, `equalizer` (15 band), `karaoke`, `timescale` (speed/pitch/rate, dùng cho nightcore và vaporwave), `tremolo`, `vibrato`, `rotation` (8D), `distortion`, `channelMix`, `lowPass`. Đổi filter hoặc âm lượng có hiệu lực trong khoảng 20 ms: node bỏ phần âm thanh đang chờ trong bộ đệm và xử lý lại từ đúng vị trí đang phát, kể cả với live stream. Khi bật `timescale`, vị trí bài hát vẫn tính theo thời gian của bài, nên thanh tiến độ trên bot chạy nhanh hoặc chậm theo `speed × rate`. `pluginFilters` được lưu và trả lại nhưng không xử lý, vì rust-link không chạy plugin của Lavalink. Muốn khóa filter nào thì đặt `false` trong `lavalink.filters` (hoặc `lavalink.server.filters` nếu dùng file của Lavalink).
 
 ## 8. Link Spotify, Apple Music, Deezer
 
@@ -345,8 +345,15 @@ Từ cuối 2024, Spotify không cho app mới đọc các playlist do chính Sp
 - **Bài dài:** bài dài hơn `cache.maxTrackDurationSecs` (mặc định 2 giờ), hoặc file HTTP lớn hơn `cache.maxFileSize`, được phát thẳng từ nguồn và không lưu cache. Node đọc từng đoạn 1 MiB bằng HTTP Range và tải trước đoạn kế tiếp, nên vẫn tua được và không làm đầy cache bằng các bản mix 10 giờ. Link YouTube hết hạn giữa chừng thì node tự lấy link mới.
 - **Live stream:** live YouTube được phát qua HLS, ưu tiên luồng chỉ có audio. Link `.m3u8` (radio HLS) cũng dùng được. Live stream không tua được và không lưu cache.
 - **Radio HTTP thường** (MP3, AAC, Ogg) vẫn phát như trước.
+- **Một live stream, nhiều server:** khi nhiều server cùng phát một live stream với cùng filter và âm lượng, node chỉ tải và giải mã một lần rồi gửi cùng gói âm thanh cho tất cả (`audio.shareLiveStreams`). Server nào đổi filter hoặc âm lượng thì tự chuyển sang luồng riêng. Tạm dừng một live stream rồi tiếp tục sẽ phát tiếp ở thời điểm live hiện tại, không phát lại đoạn đã lỡ.
 
-## 10. Kiểm tra node hoạt động
+## 10. Tăng tốc phản hồi cho bot
+
+- **Cache kết quả tìm kiếm:** kết quả của `ytsearch:`, `spsearch:`... và của link YouTube, SoundCloud, Spotify, Apple Music, Deezer được dùng lại trong `sources.loadCacheTtlSecs` (mặc định 6 giờ). Lệnh tìm lặp lại trả về ngay và ít gọi YouTube hơn, nên cũng ít bị chặn 429. Truy vấn không phân biệt hoa thường và khoảng trắng thừa.
+- **Tải trước playlist:** khi bot load một playlist, node tải sẵn `cache.prefetchTracks` bài đầu (mặc định 3). Mỗi khi một bài trong playlist đó bắt đầu phát, node tải tiếp các bài sau nó. Bài kế tiếp vì vậy phát ngay từ đĩa. Bot dùng chế độ trộn bài (shuffle) thì phần tải trước có thể không trúng bài kế tiếp; đặt `prefetchTracks: 0` nếu muốn tắt.
+- **yt-dlp khởi động nhanh hơn:** chế độ `managed` dùng bản yt-dlp dạng thư mục, không phải tự giải nén mỗi lần chạy, nên mỗi lần tìm hoặc tải bắt đầu nhanh hơn khoảng nửa giây.
+
+## 11. Kiểm tra node hoạt động
 
 ```bash
 curl -H "Authorization: youshallnotpass" http://localhost:2333/version
@@ -362,7 +369,7 @@ curl -H "Authorization: youshallnotpass" http://localhost:2333/v4/rustlink/cache
 
 Lệnh đầu trả về `4.1.1`. Lệnh thứ hai trả về JSON có `"loadType":"search"`. Lệnh cuối cho biết số bài đã cache, dung lượng đang dùng và số bài chờ backup.
 
-## 11. Sự cố thường gặp
+## 12. Sự cố thường gặp
 
 | Hiện tượng | Nguyên nhân và cách xử lý |
 |---|---|
@@ -381,7 +388,7 @@ Lệnh đầu trả về `4.1.1`. Lệnh thứ hai trả về JSON có `"loadTyp
 | Bot vào kênh nhưng không có tiếng | Tường lửa chặn UDP gửi ra ngoài. Mở UDP outbound. |
 | Bài phát lần đầu chậm vài giây | Bài đang được tải qua yt-dlp. Từ lần thứ hai bài được phát thẳng từ cache. |
 
-## 12. Bật backup OneDrive
+## 13. Bật backup OneDrive
 
 1. Tạo app trong Azure Portal, mục App registrations, bật **Allow public client flows** và cấp quyền `Files.ReadWrite`, `offline_access`.
 2. Đăng nhập một lần bằng lệnh dưới đây; credentials được ghi ra file theo `onedrive.credentialsFile`.

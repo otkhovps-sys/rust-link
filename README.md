@@ -33,6 +33,8 @@
 - **Opus passthrough:** gói Opus 48 kHz của YouTube được gửi thẳng tới Discord, không decode và không encode lại khi volume 100 và không bật filter.
 - **Link Spotify, Apple Music, Deezer kiểu LavaSrc:** track, album, playlist, nghệ sĩ và `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`. Lúc phát, node tìm bản YouTube theo ISRC rồi theo tên bài, có so độ dài, và nhớ kết quả trong SQLite.
 - **Phát trực tiếp khi không nên cache:** live YouTube và radio `.m3u8` qua HLS (tự tách audio từ MPEG-TS); bài dài hơn 2 giờ hoặc file quá lớn đọc bằng HTTP Range, vẫn tua được.
+- **Nhanh hơn ở những chỗ bot hay chờ:** kết quả tìm kiếm được nhớ 6 giờ, playlist được tải trước vài bài kế tiếp, filter và âm lượng có hiệu lực trong khoảng 20 ms thay vì chờ bộ đệm 0,4 giây, yt-dlp dùng bản thư mục nên mỗi lần gọi nhanh gấp đôi (đo được 0,45 s so với 1 s).
+- **Một luồng live, nhiều server:** các server phát cùng một live stream với cùng filter và âm lượng dùng chung một lần tải, giải mã và mã hóa, nên bot radio 24/7 không tốn thêm CPU khi có thêm server.
 - **Đủ 10 filter Lavalink:** volume, equalizer 15 band, karaoke, timescale (nightcore, vaporwave), tremolo, vibrato, rotation (8D), distortion, channelMix, lowPass. DSP viết thuần Rust, bật cả 10 filter tốn khoảng 1% một nhân CPU cho mỗi player.
 - **Voice Discord đời mới:** Voice Gateway v8, mã hóa `aead_aes256_gcm_rtpsize` hoặc `aead_xchacha20_poly1305_rtpsize`, mã hóa đầu cuối DAVE.
 - **Cache tiết kiệm băng thông:** phát ngay khi file còn đang tải, gộp các lượt tải trùng nhau, dọn LRU theo ngưỡng 90% và 80%, không xóa file đang phát.
@@ -220,7 +222,8 @@ Node tìm file cấu hình theo thứ tự: `--config`, `application.yml` hoặc
 | `lavalink.playerUpdateInterval` | `5` | Số giây giữa các op `playerUpdate` |
 | `lavalink.filters.<tên>` | `true` | Tắt một filter; client gửi filter đã tắt sẽ nhận lỗi 400 |
 | `audio.opusPassthrough` | `true` | Gửi thẳng gói Opus của nguồn khi không cần xử lý |
-| `audio.frameBufferMs` | `400` | Bộ đệm giữa decoder và luồng gửi; filter mới có hiệu lực sau khoảng này |
+| `audio.frameBufferMs` | `400` | Bộ đệm giữa decoder và luồng gửi (đổi filter, âm lượng vẫn có hiệu lực ngay) |
+| `audio.shareLiveStreams` | `true` | Server cùng phát một live stream dùng chung một lần giải mã |
 | `audio.encryptionMode` | `auto` | `auto`, `aead_aes256_gcm_rtpsize` hoặc `aead_xchacha20_poly1305_rtpsize` |
 | `audio.dave` | `true` | Hỗ trợ mã hóa đầu cuối DAVE |
 | `sources.ytdlp.path` | `managed` (gói và Docker) | `managed`: node tự tải yt-dlp; hoặc đường dẫn tới yt-dlp có sẵn |
@@ -235,6 +238,8 @@ Node tìm file cấu hình theo thứ tự: `--config`, `application.yml` hoặc
 | `cache.evictUnsynced` | `false` | Cho phép xóa file chưa backup |
 | `cache.progressivePlayback` | `true` | Phát trong lúc file còn đang tải |
 | `cache.maxTrackDurationSecs` | `7200` | Bài dài hơn phát thẳng từ nguồn, không lưu cache (0 = không giới hạn) |
+| `cache.prefetchTracks` | `3` | Số bài tải trước khi load playlist và khi phát một bài trong playlist (0 = tắt) |
+| `sources.loadCacheTtlSecs` | `21600` | Thời gian dùng lại kết quả tìm kiếm và link nhạc (0 = tắt) |
 | `onedrive.enabled` | `false` | Bật backup OneDrive |
 | `onedrive.remoteFolder` | `AudioCache` | Thư mục trên OneDrive |
 | `onedrive.chunkSize` | `10MiB` | Kích thước chunk upload, làm tròn xuống bội số 320 KiB |
@@ -338,7 +343,9 @@ Endpoint mở rộng cho vận hành:
 - [ ] Route planner (xoay vòng IPv6)
 - [ ] Endpoint Prometheus `/metrics`
 - [ ] Số liệu CPU và RAM trong `stats` trên Windows
-- [ ] Filter có hiệu lực ngay, không chờ bộ đệm
+- [x] Filter và âm lượng có hiệu lực ngay, không chờ bộ đệm
+- [x] Cache kết quả tìm kiếm, tải trước playlist, live stream dùng chung, yt-dlp bản thư mục
+- [ ] Script đo so sánh CPU, RAM, độ trễ với Lavalink
 
 Hiện `pluginFilters` chỉ được lưu và trả lại, vì rust-link không chạy plugin JVM của Lavalink.
 

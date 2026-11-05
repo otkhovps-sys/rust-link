@@ -8,6 +8,10 @@ Audio node tương thích **Lavalink v4**, viết bằng Rust, có cache audio c
 - **Bài dài hơn 2 giờ hoặc file quá lớn** phát thẳng từ nguồn bằng HTTP Range, vẫn tua được, không làm đầy cache.
 - **yt-dlp tự tải và tự cập nhật** (`sources.ytdlp.path: managed`), thêm lệnh `rust-link update-ytdlp`.
 - **Gói Linux ARM64** và **image Docker amd64 + arm64** trên `ghcr.io`.
+- **Filter và âm lượng có hiệu lực ngay** (khoảng 20 ms), không chờ bộ đệm.
+- **Cache kết quả tìm kiếm** 6 giờ và **tải trước playlist** (3 bài kế tiếp), nên bài kế phát ngay từ đĩa.
+- **Live stream dùng chung:** nhiều server phát cùng một live stream chỉ tốn một lần tải và giải mã.
+- **yt-dlp bản thư mục:** mỗi lần gọi yt-dlp nhanh gấp đôi.
 
 ## Tải về
 
