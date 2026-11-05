@@ -1,0 +1,6 @@
+{
+  "client_id": "00000000-0000-0000-0000-000000000000",
+  "tenant": "consumers",
+  "scope": "offline_access Files.ReadWrite",
+  "refresh_token": "<được ghi tự động bởi: rust-link onedrive-login --client-id ...>"
+}

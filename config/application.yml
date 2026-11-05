@@ -1,0 +1,69 @@
+# rust-link: Audio Node tương thích Lavalink v4
+# Mọi khóa đều tùy chọn; giá trị bên dưới là mặc định khuyến nghị.
+# Biến môi trường ghi đè: RUSTLINK_SERVER_PASSWORD (hoặc LAVALINK_SERVER_PASSWORD),
+# RUSTLINK_SERVER_PORT, RUSTLINK_SERVER_ADDRESS, RUSTLINK_CACHE_DIR.
+
+server:
+  address: 0.0.0.0
+  port: 2333
+  # Giá trị header "Authorization" mà client Lavalink phải gửi
+  password: "youshallnotpass"
+
+lavalink:
+  playerUpdateInterval: 5        # giây giữa các op "playerUpdate"
+  statsInterval: 60              # giây giữa các op "stats"
+  trackStuckThresholdMs: 10000   # không có frame trong khoảng này -> TrackStuckEvent
+  resumeBacklogSize: 1000        # số event giữ lại khi session đang chờ resume
+
+audio:
+  opusBitrate: 128000
+  opusComplexity: 10
+  frameBufferMs: 400             # bộ đệm frame 20ms giữa decoder và UDP sender
+  opusPassthrough: true          # gửi thẳng gói Opus 48kHz stereo khi volume = 100 và không có filter
+  encryptionMode: auto           # auto | aead_aes256_gcm_rtpsize | aead_xchacha20_poly1305_rtpsize
+  dave: true                     # hỗ trợ Discord E2EE (DAVE); cần client gửi voice.channelId
+  udpKeepaliveSecs: 5
+
+sources:
+  youtube: true
+  soundcloud: true
+  http: true                     # URL trực tiếp tới file audio / radio stream
+  ytdlpGeneric: true             # các URL khác: thử qua extractor của yt-dlp
+  httpTimeoutSecs: 20
+  ytdlp:
+    path: yt-dlp
+    format: "bestaudio[acodec=opus]/bestaudio/best"
+    searchLimit: 10
+    metadataTimeoutSecs: 30
+    extraArgs: []                # ví dụ: ["--cookies", "/config/cookies.txt"]
+
+cache:
+  enabled: true
+  directory: /data/cache         # file lưu tại {directory}/{id_prefix}/{video_id}.opus
+  database: /data/cache/index.db
+  maxSize: 20GiB
+  highWatermark: 0.90            # vượt 90% maxSize -> bắt đầu dọn LRU
+  lowWatermark: 0.80             # dọn tới khi còn dưới 80%
+  lruIntervalSecs: 60
+  evictUnsynced: false           # false: không xóa file chưa backup lên OneDrive
+  progressivePlayback: true      # phát ngay trong lúc file còn đang tải
+  maxFileSize: 1GiB
+  fileExtension: opus
+
+onedrive:
+  enabled: false
+  # Tạo file này bằng lệnh: rust-link onedrive-login --client-id <APP_ID>
+  credentialsFile: config/onedrive.json
+  remoteFolder: AudioCache       # /me/drive/root:/AudioCache/{filename}
+  syncIntervalSecs: 300
+  syncBatchSize: 25
+  maxConcurrentUploads: 2
+  chunkSize: 10MiB               # được làm tròn xuống bội số của 320 KiB
+  simpleUploadMax: 4MiB          # file nhỏ hơn: PUT một lần, không cần upload session
+  snapshotIntervalSecs: 3600     # chu kỳ backup snapshot SQLite
+  restoreIndexOnStartup: true    # mất DB cục bộ -> tải snapshot từ OneDrive về
+  maxSyncAttempts: 12
+  requestTimeoutSecs: 120
+
+logging:
+  level: info                    # RUST_LOG (nếu có) được ưu tiên hơn
