@@ -108,7 +108,9 @@ Client Lavalink trỏ tới `ws://HOST:2333/v4/websocket` với password trong `
 
 ## Đóng gói và triển khai
 
-- **File nén chạy ngay:** `scripts/package.sh` build file chạy tĩnh (musl) và tạo `dist/rust-link-<version>-linux-x86_64.tar.gz` gồm file chạy, `application.yml`, mẫu systemd và tài liệu.
+- **Bản dựng sẵn:** tải tại [Releases](https://github.com/otkhovps-sys/rust-link/releases), có gói Linux x86_64 (`.tar.gz`) và Windows x86_64 (`.zip`, chạy bằng `start.bat`).
+- **Phát hành:** push tag `v*` khớp `version` trong `Cargo.toml`; workflow `.github/workflows/release.yml` chạy test, build hai gói và đăng lên Releases.
+- **File nén chạy ngay:** `scripts/package.sh` build file chạy tĩnh (musl) và tạo `dist/rust-link-<version>-linux-x86_64.tar.gz` gồm file chạy, `application.yml`, mẫu systemd và tài liệu. `TARGET=x86_64-pc-windows-gnu scripts/package.sh` tạo gói Windows `.zip`.
 - **systemd:** mẫu unit ở `packaging/rust-link.service`.
 - **Docker:** `docker compose up -d --build`. Image có sẵn yt-dlp và Deno, dữ liệu nằm trên volume `/data`.
 
@@ -201,3 +203,4 @@ RUSTLINK_TEST_YTDLP=$(which yt-dlp) cargo test --test live_youtube -- --ignored 
 - Live stream YouTube (HLS / MPEG-TS) chưa hỗ trợ vì symphonia không demux MPEG-TS. Radio HTTP (MP3, AAC, Ogg) vẫn phát được.
 - Luồng DAVE mới được kiểm thử bằng unit test với `davey`, chưa chạy với server Discord thật.
 - Route planner của Lavalink chưa được triển khai.
+- Trên Windows, `stats` báo CPU và RAM bằng 0 vì phần đo chỉ hỗ trợ Linux; bản Windows mới được chạy thử bằng Wine.

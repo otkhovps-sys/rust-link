@@ -1,0 +1,80 @@
+name: Release
+
+# Push a tag such as v0.1.0 (matching `version` in Cargo.toml) to test, build the Linux and
+# Windows packages and publish them as a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check tag matches Cargo.toml version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version v${version}"
+            exit 1
+          fi
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake
+      - name: Run tests
+        run: cargo test --locked
+
+  package:
+    name: Package ${{ matrix.platform }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: x86_64-unknown-linux-musl
+            packages: musl-tools
+          - platform: windows-x86_64
+            target: x86_64-pc-windows-gnu
+            packages: mingw-w64 zip
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ${{ matrix.packages }}
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build and package
+        run: TARGET=${{ matrix.target }} scripts/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-link-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [test, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sed "s/{{VERSION}}/${version}/g" packaging/release-notes.md > notes.md
+          ls -l dist
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "rust-link ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            --verify-tag

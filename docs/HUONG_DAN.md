@@ -6,10 +6,10 @@ rust-link là một audio node nói chuẩn **Lavalink v4**. Bot Discord đang d
 
 | | Lavalink | rust-link |
 |---|---|---|
-| File chạy | `Lavalink.jar` | `rust-link` (một file tĩnh, Linux x86_64) |
+| File chạy | `Lavalink.jar` | `rust-link` (Linux x86_64) hoặc `rust-link.exe` (Windows x86_64), mỗi bản là một file duy nhất |
 | Cần cài thêm | Java 17+ | `yt-dlp` (khuyến nghị thêm Deno) |
 | File cấu hình | `application.yml` cạnh file chạy | `application.yml` cạnh file chạy |
-| Lệnh chạy | `java -jar Lavalink.jar` | `./rust-link` |
+| Lệnh chạy | `java -jar Lavalink.jar` | `./rust-link` hoặc bấm đúp `start.bat` |
 | Port / password mặc định | `2333` / `youshallnotpass` | `2333` / `youshallnotpass` |
 | WebSocket | `/v4/websocket` | `/v4/websocket` |
 | Thư mục log | `./logs/` | `./logs/` |
@@ -18,7 +18,7 @@ rust-link là một audio node nói chuẩn **Lavalink v4**. Bot Discord đang d
 
 ## 2. Chuẩn bị máy chủ
 
-- **Hệ điều hành:** Linux x86_64 bất kỳ. File chạy được link tĩnh nên không phụ thuộc phiên bản glibc, đã chạy thử trên Ubuntu 18.04, Debian 11 và Alpine 3.20. Windows và macOS cần tự build từ mã nguồn.
+- **Hệ điều hành:** Linux x86_64 bất kỳ, hoặc Windows 10/11 x86_64. Bản Linux được link tĩnh nên không phụ thuộc phiên bản glibc, đã chạy thử trên Ubuntu 18.04, Debian 11 và Alpine 3.20. Bản Windows mới được chạy thử bằng Wine, chưa thử trên máy Windows thật. macOS cần tự build từ mã nguồn.
 - **yt-dlp:** bắt buộc để tìm và tải nhạc YouTube, SoundCloud. Bản standalone không cần Python:
 
 ```bash
@@ -39,6 +39,20 @@ sudo yt-dlp -U
 ```
 
 ## 3. Cách 1: chạy từ file nén (giống Lavalink.jar)
+
+Tải bản dựng sẵn tại trang Releases: https://github.com/otkhovps-sys/rust-link/releases
+
+| File | Dành cho |
+|---|---|
+| `rust-link-<version>-linux-x86_64.tar.gz` | Linux x86_64 |
+| `rust-link-<version>-windows-x86_64.zip` | Windows x86_64 |
+| `*.sha256` | Mã kiểm tra toàn vẹn của file tải về |
+
+Kiểm tra file tải về trên Linux:
+
+```bash
+sha256sum -c rust-link-0.1.0-linux-x86_64.tar.gz.sha256
+```
 
 Giải nén gói `rust-link-<version>-linux-x86_64.tar.gz`:
 
@@ -112,6 +126,25 @@ Xem log:
 journalctl -u rust-link -f
 ```
 
+### Chạy trên Windows
+
+1. Giải nén `rust-link-<version>-windows-x86_64.zip`, ví dụ vào `C:\rust-link`.
+2. Tải `yt-dlp.exe` từ https://github.com/yt-dlp/yt-dlp/releases và đặt cùng thư mục với `rust-link.exe`, hoặc vào một thư mục trong PATH. Nên cài thêm Deno.
+3. Mở `application.yml` bằng Notepad, đổi `server.password`.
+4. Bấm đúp `start.bat`. Cửa sổ dòng lệnh hiện dòng `rust-link is ready to accept connections` là node đã sẵn sàng.
+
+Trong gói Windows, cache nằm ở `data\cache` và log ở `logs\`, cạnh `rust-link.exe`. Khi Windows Firewall hỏi, chọn **Allow access** để bot kết nối được vào cổng 2333.
+
+Nếu `yt-dlp.exe` nằm ở chỗ khác, khai báo đường dẫn đầy đủ trong `application.yml`, dùng dấu `/` hoặc đặt trong nháy đơn:
+
+```yaml
+sources:
+  ytdlp:
+    path: 'C:\tools\yt-dlp.exe'
+```
+
+Trên Windows, phần `stats` báo CPU và RAM bằng 0 vì phần đo hiện chỉ hỗ trợ Linux. Phát nhạc không bị ảnh hưởng.
+
 ## 4. Cách 2: chạy bằng Docker
 
 Từ thư mục mã nguồn:
@@ -143,6 +176,28 @@ scripts/package.sh
 ```
 
 Kết quả nằm trong `dist/`: file `rust-link-<version>-linux-x86_64.tar.gz` và file `.sha256` đi kèm.
+
+Bản Windows được cross-compile từ Linux bằng MinGW:
+
+```bash
+rustup target add x86_64-pc-windows-gnu
+```
+
+```bash
+TARGET=x86_64-pc-windows-gnu scripts/package.sh
+```
+
+### Phát hành lên GitHub Releases
+
+Workflow `.github/workflows/release.yml` tự chạy test, build hai gói Linux và Windows rồi đăng lên Releases khi có tag dạng `v*`. Tag phải khớp `version` trong `Cargo.toml`:
+
+```bash
+git tag v0.1.0
+```
+
+```bash
+git push origin v0.1.0
+```
 
 ## 6. Dùng lại application.yml của Lavalink
 
