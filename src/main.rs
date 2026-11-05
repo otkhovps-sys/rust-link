@@ -4,7 +4,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 use rust_link::{api, config::AppConfig, node, onedrive};
 
@@ -15,9 +15,10 @@ use rust_link::{api, config::AppConfig, node, onedrive};
     about = "Lavalink v4 compatible audio node with LRU cache and OneDrive backup"
 )]
 struct Cli {
-    /// Path to application.yml
-    #[arg(short, long, env = "RUSTLINK_CONFIG", default_value = "config/application.yml")]
-    config: PathBuf,
+    /// Path to application.yml. Without it, `application.yml` in the working directory is
+    /// used (like Lavalink), then `config/application.yml`.
+    #[arg(short, long, env = "RUSTLINK_CONFIG")]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -47,11 +48,13 @@ enum Command {
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    let config = AppConfig::load(&cli.config)?;
-
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(format!("{},sqlx=warn,symphonia=warn", config.logging.level)));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    let config_path = AppConfig::locate(cli.config.as_deref());
+    let config = AppConfig::load(config_path.as_deref())?;
+    let _log_guard = init_logging(&config)?;
+    match &config_path {
+        Some(path) => info!(config = %path.display(), "configuration loaded"),
+        None => info!("configuration: built-in defaults"),
+    }
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(config).await,
@@ -82,6 +85,27 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Console logging, plus daily rotated files when `logging.file.path` is set (Lavalink style).
+fn init_logging(config: &AppConfig) -> anyhow::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
+    let directives = format!("{},sqlx=warn,symphonia=warn", config.logging.level.0);
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&directives));
+    let (file_layer, guard) = match &config.logging.file.path {
+        Some(dir) => {
+            std::fs::create_dir_all(dir).with_context(|| format!("cannot create log directory {}", dir.display()))?;
+            let appender = tracing_appender::rolling::daily(dir, "rust-link.log");
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            (Some(fmt::layer().with_ansi(false).with_writer(writer)), Some(guard))
+        }
+        None => (None, None),
+    };
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer())
+        .with(file_layer)
+        .init();
+    Ok(guard)
+}
+
 async fn serve(config: AppConfig) -> anyhow::Result<()> {
     let address: SocketAddr = format!("{}:{}", config.server.address, config.server.port)
         .parse()
@@ -92,7 +116,7 @@ async fn serve(config: AppConfig) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(address)
         .await
         .with_context(|| format!("cannot bind {address}"))?;
-    info!(%address, "rust-link is ready (Lavalink v4 API)");
+    info!(%address, "rust-link is ready to accept connections (Lavalink v4 API)");
 
     let app = api::router(ctx.clone());
     let signal_token = shutdown.clone();

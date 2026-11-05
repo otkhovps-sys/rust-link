@@ -231,32 +231,155 @@ impl OneDriveConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct LoggingConfig {
-    pub level: String,
+    /// `info`, or Lavalink's map form `{ root: INFO, lavalink: INFO }`.
+    pub level: LogLevel,
+    /// Lavalink compatible `logging.file.path`: also write daily rotated log files there.
+    pub file: LogFileConfig,
 }
 
-impl Default for LoggingConfig {
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LogFileConfig {
+    pub path: Option<PathBuf>,
+}
+
+/// Log level given either as a string or as Lavalink's `{root, lavalink}` map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogLevel(pub String);
+
+impl Default for LogLevel {
     fn default() -> Self {
-        Self { level: "info".into() }
+        Self("info".into())
     }
 }
 
+impl<'de> Deserialize<'de> for LogLevel {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Plain(String),
+            Map {
+                root: Option<String>,
+                lavalink: Option<String>,
+            },
+        }
+        let level = match Raw::deserialize(deserializer)? {
+            Raw::Plain(level) => level,
+            Raw::Map { root, lavalink } => lavalink.or(root).unwrap_or_else(|| "info".into()),
+        };
+        Ok(LogLevel(level.trim().to_ascii_lowercase()))
+    }
+}
+
+/// Default file names searched in the working directory, like Lavalink.
+pub const CONFIG_CANDIDATES: [&str; 3] = ["application.yml", "application.yaml", "config/application.yml"];
+
+fn yaml_path<'a>(root: &'a serde_norway::Value, path: &[&str]) -> Option<&'a serde_norway::Value> {
+    path.iter().try_fold(root, |node, key| node.get(*key))
+}
+
 impl AppConfig {
+    /// Config file to use: the explicit path, else `application.yml` in the working
+    /// directory (Lavalink behaviour), `config/application.yml`, then next to the binary.
+    pub fn locate(explicit: Option<&Path>) -> Option<PathBuf> {
+        if let Some(path) = explicit {
+            return Some(path.to_path_buf());
+        }
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf));
+        CONFIG_CANDIDATES
+            .iter()
+            .map(PathBuf::from)
+            .chain(exe_dir.map(|d| d.join("application.yml")))
+            .find(|p| p.is_file())
+    }
+
     /// Load the YAML file (defaults when missing) and apply environment overrides.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let mut config = if path.exists() {
-            let raw = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-            serde_norway::from_str::<AppConfig>(&raw)
-                .with_context(|| format!("invalid configuration in {}", path.display()))?
-        } else {
-            eprintln!("config file {} not found, falling back to defaults", path.display());
-            AppConfig::default()
+    pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
+        let mut config = match path {
+            Some(path) if path.exists() => {
+                let raw = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+                Self::from_yaml(&raw).with_context(|| format!("invalid configuration in {}", path.display()))?
+            }
+            Some(path) => bail!("config file {} not found", path.display()),
+            None => {
+                eprintln!("no application.yml found, using built-in defaults");
+                AppConfig::default()
+            }
         };
         config.apply_env();
         config.validate()?;
         Ok(config)
+    }
+
+    /// Parse rust-link YAML. A Lavalink v4 `application.yml` is also accepted: its
+    /// `lavalink.server.*` keys are used wherever the rust-link key is absent.
+    pub fn from_yaml(raw: &str) -> anyhow::Result<Self> {
+        let value: serde_norway::Value = serde_norway::from_str(raw)?;
+        if value.is_null() {
+            return Ok(AppConfig::default());
+        }
+        let mut config: AppConfig = serde_norway::from_value(value.clone())?;
+        config.apply_lavalink_compat(&value);
+        Ok(config)
+    }
+
+    fn apply_lavalink_compat(&mut self, root: &serde_norway::Value) {
+        let has = |path: &[&str]| yaml_path(root, path).is_some();
+        let server = |key: &str| yaml_path(root, &["lavalink", "server", key]);
+        let as_u64 = |v: &serde_norway::Value| v.as_u64();
+
+        if !has(&["server", "password"]) {
+            if let Some(password) = server("password").and_then(|v| v.as_str()) {
+                self.server.password = password.to_string();
+            }
+        }
+        if !has(&["lavalink", "playerUpdateInterval"]) {
+            if let Some(v) = server("playerUpdateInterval").and_then(as_u64) {
+                self.lavalink.player_update_interval = v;
+            }
+        }
+        if !has(&["lavalink", "trackStuckThresholdMs"]) {
+            if let Some(v) = server("trackStuckThresholdMs").and_then(as_u64) {
+                self.lavalink.track_stuck_threshold_ms = v;
+            }
+        }
+        if !has(&["audio", "opusComplexity"]) {
+            if let Some(v) = server("opusEncodingQuality").and_then(as_u64) {
+                self.audio.opus_complexity = v.min(10) as u8;
+            }
+        }
+        if !has(&["audio", "frameBufferMs"]) {
+            if let Some(v) = server("bufferDurationMs").and_then(as_u64) {
+                self.audio.frame_buffer_ms = v.max(40);
+            }
+        }
+        let source = |name: &str| yaml_path(root, &["lavalink", "server", "sources", name]).and_then(|v| v.as_bool());
+        if !has(&["sources", "youtube"]) {
+            // Lavalink v4 disables the built-in YouTube source in favour of youtube-plugin.
+            let plugin = yaml_path(root, &["plugins", "youtube", "enabled"]).and_then(|v| v.as_bool());
+            if let Some(enabled) = match (source("youtube"), plugin) {
+                (None, None) => None,
+                (a, b) => Some(a.unwrap_or(false) || b.unwrap_or(false)),
+            } {
+                self.sources.youtube = enabled;
+            }
+        }
+        if !has(&["sources", "soundcloud"]) {
+            if let Some(enabled) = source("soundcloud") {
+                self.sources.soundcloud = enabled;
+            }
+        }
+        if !has(&["sources", "http"]) {
+            if let Some(enabled) = source("http") {
+                self.sources.http = enabled;
+            }
+        }
     }
 
     fn apply_env(&mut self) {
@@ -271,11 +394,15 @@ impl AppConfig {
         {
             self.server.port = port;
         }
-        if let Ok(address) = std::env::var("RUSTLINK_SERVER_ADDRESS") {
+        if let Ok(address) = std::env::var("RUSTLINK_SERVER_ADDRESS").or_else(|_| std::env::var("SERVER_ADDRESS")) {
             self.server.address = address;
         }
         if let Ok(dir) = std::env::var("RUSTLINK_CACHE_DIR") {
-            self.cache.directory = PathBuf::from(dir);
+            let dir = PathBuf::from(dir);
+            if self.cache.database == self.cache.directory.join("index.db") {
+                self.cache.database = dir.join("index.db");
+            }
+            self.cache.directory = dir;
         }
     }
 
@@ -418,9 +545,104 @@ mod tests {
     #[test]
     fn sample_config_parses() {
         let raw = include_str!("../config/application.yml");
-        let cfg: AppConfig = serde_norway::from_str(raw).expect("sample config must parse");
+        let cfg = AppConfig::from_yaml(raw).expect("sample config must parse");
         cfg.validate().unwrap();
         assert_eq!(cfg.server.port, 2333);
         assert_eq!(cfg.cache.max_size.0, 20 * 1024 * 1024 * 1024);
+    }
+
+    /// Default `application.yml` shipped with Lavalink v4 (trimmed comments).
+    const LAVALINK_APPLICATION_YML: &str = r#"
+server:
+  port: 2444
+  address: 0.0.0.0
+  http2:
+    enabled: false
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    clients: ["MUSIC", "ANDROID_VR", "WEB", "WEBEMBEDDED"]
+lavalink:
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.0"
+      snapshot: false
+  server:
+    password: "secret-from-lavalink"
+    sources:
+      youtube: false
+      bandcamp: true
+      soundcloud: false
+      twitch: true
+      vimeo: true
+      nico: true
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 8
+    resamplingQuality: LOW
+    trackStuckThresholdMs: 8000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 3
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+sentry:
+  dsn: ""
+  environment: ""
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: DEBUG
+  request:
+    enabled: true
+    includeClientInfo: true
+  logback:
+    rollingpolicy:
+      max-file-size: 1GB
+      max-history: 30
+"#;
+
+    #[test]
+    fn lavalink_application_yml_is_accepted() {
+        let cfg = AppConfig::from_yaml(LAVALINK_APPLICATION_YML).unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.server.port, 2444);
+        assert_eq!(cfg.server.password, "secret-from-lavalink");
+        assert_eq!(cfg.lavalink.player_update_interval, 3);
+        assert_eq!(cfg.lavalink.track_stuck_threshold_ms, 8000);
+        assert_eq!(cfg.audio.opus_complexity, 8);
+        assert_eq!(cfg.audio.frame_buffer_ms, 400);
+        assert!(cfg.sources.youtube, "youtube-plugin enabled means YouTube stays on");
+        assert!(!cfg.sources.soundcloud);
+        assert!(cfg.sources.http);
+        assert_eq!(cfg.logging.level, LogLevel("debug".into()));
+        assert_eq!(cfg.logging.file.path.as_deref(), Some(Path::new("./logs/")));
+    }
+
+    #[test]
+    fn native_keys_win_over_lavalink_keys() {
+        let raw = "server:\n  password: native\nlavalink:\n  server:\n    password: legacy\n";
+        assert_eq!(AppConfig::from_yaml(raw).unwrap().server.password, "native");
+        assert_eq!(AppConfig::from_yaml("").unwrap().server.port, 2333);
+        assert_eq!(
+            AppConfig::from_yaml("logging:\n  level: WARN\n")
+                .unwrap()
+                .logging
+                .level
+                .0,
+            "warn"
+        );
     }
 }

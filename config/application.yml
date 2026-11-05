@@ -1,5 +1,7 @@
 # rust-link: Audio Node tương thích Lavalink v4
 # Mọi khóa đều tùy chọn; giá trị bên dưới là mặc định khuyến nghị.
+# File application.yml của Lavalink v4 cũng dùng được: các khóa lavalink.server.* (password,
+# sources, playerUpdateInterval...) được đọc khi khóa tương ứng của rust-link vắng mặt.
 # Biến môi trường ghi đè: RUSTLINK_SERVER_PASSWORD (hoặc LAVALINK_SERVER_PASSWORD),
 # RUSTLINK_SERVER_PORT, RUSTLINK_SERVER_ADDRESS, RUSTLINK_CACHE_DIR.
 
@@ -66,4 +68,6 @@ onedrive:
   requestTimeoutSecs: 120
 
 logging:
-  level: info                    # RUST_LOG (nếu có) được ưu tiên hơn
+  level: info                    # hoặc dạng Lavalink: { root: INFO, lavalink: INFO }; RUST_LOG được ưu tiên hơn
+  file:
+    path: ./logs/                # ghi thêm log ra file xoay vòng theo ngày, giống Lavalink; bỏ dòng này để tắt

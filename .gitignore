@@ -2,3 +2,6 @@
 /data
 config/onedrive.json
 *.part
+/dist
+/logs
+.ccr-ca.crt

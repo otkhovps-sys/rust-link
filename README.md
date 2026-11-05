@@ -44,6 +44,10 @@ Client Lavalink ──REST/WS──► api/ ──► player/ (Session, Player)
 │   ├── application.yml          # cấu hình mẫu (cổng, password, cache, OneDrive)
 │   └── onedrive.example.json    # mẫu file credentials
 ├── migrations/0001_init_cache.sql
+├── docs/HUONG_DAN.md            # hướng dẫn triển khai và đấu nối bot
+├── scripts/package.sh           # đóng gói thành file .tar.gz
+├── packaging/rust-link.service  # mẫu systemd
+├── Dockerfile, docker-compose.yml
 ├── src/
 │   ├── main.rs                  # CLI: serve | onedrive-login | check-config
 │   ├── lib.rs, config.rs, node.rs, stats.rs, util.rs
@@ -82,6 +86,10 @@ Client Lavalink ──REST/WS──► api/ ──► player/ (Session, Player)
 
 ## Chạy nhanh
 
+Hướng dẫn đầy đủ về triển khai và đấu nối bot nằm trong [docs/HUONG_DAN.md](docs/HUONG_DAN.md).
+
+Cách chạy giống Lavalink: đặt file `rust-link` và `application.yml` chung một thư mục rồi chạy `./rust-link`. Không có `--config`, node tìm lần lượt `application.yml`, `application.yaml`, `config/application.yml` trong thư mục hiện tại, sau đó tới thư mục chứa file chạy. File `application.yml` của Lavalink v4 cũng dùng được.
+
 ```bash
 cargo build --release
 ```
@@ -97,6 +105,12 @@ Kiểm tra cấu hình mà không khởi động node:
 ```
 
 Client Lavalink trỏ tới `ws://HOST:2333/v4/websocket` với password trong `server.password`. Khi gửi voice state, client nên kèm `voice.channelId` (Lavalink 4.1+ đã làm vậy) để node bật được DAVE.
+
+## Đóng gói và triển khai
+
+- **File nén chạy ngay:** `scripts/package.sh` build file chạy tĩnh (musl) và tạo `dist/rust-link-<version>-linux-x86_64.tar.gz` gồm file chạy, `application.yml`, mẫu systemd và tài liệu.
+- **systemd:** mẫu unit ở `packaging/rust-link.service`.
+- **Docker:** `docker compose up -d --build`. Image có sẵn yt-dlp và Deno, dữ liệu nằm trên volume `/data`.
 
 ## Cấu hình
 
@@ -115,7 +129,7 @@ Xem chú thích trong `config/application.yml`. Các khóa quan trọng:
 | `audio.encryptionMode` | `auto` | Chế độ mã hóa RTP |
 | `audio.dave` | `true` | Quảng bá hỗ trợ DAVE |
 
-Biến môi trường ghi đè: `RUSTLINK_SERVER_PASSWORD` (hoặc `LAVALINK_SERVER_PASSWORD`), `RUSTLINK_SERVER_PORT`, `RUSTLINK_SERVER_ADDRESS`, `RUSTLINK_CACHE_DIR`, `RUSTLINK_CONFIG`. `RUST_LOG` ghi đè `logging.level`.
+Biến môi trường ghi đè: `RUSTLINK_SERVER_PASSWORD` (hoặc `LAVALINK_SERVER_PASSWORD`), `RUSTLINK_SERVER_PORT` (hoặc `SERVER_PORT`), `RUSTLINK_SERVER_ADDRESS` (hoặc `SERVER_ADDRESS`), `RUSTLINK_CACHE_DIR`, `RUSTLINK_CONFIG`. `RUST_LOG` ghi đè `logging.level`. Đặt `logging.file.path` để ghi thêm log ra file xoay vòng theo ngày.
 
 ## Thiết lập OneDrive
 

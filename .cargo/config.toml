@@ -1,0 +1,7 @@
+# Static musl builds: libopus.a (from audiopus_sys) needs libc math symbols such as sqrt,
+# so libc is scanned again at the end of the link line.
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-lc"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-lc"]

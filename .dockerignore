@@ -1,0 +1,6 @@
+target
+dist
+data
+logs
+.git
+config/onedrive.json
