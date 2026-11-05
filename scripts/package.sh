@@ -39,6 +39,7 @@ grep -q 'directory: ./data/cache' "$STAGE/application.yml" || { echo "cache path
 cp config/onedrive.example.json "$STAGE/onedrive.example.json"
 cp docs/HUONG_DAN.md "$STAGE/HUONG_DAN.md"
 cp README.md "$STAGE/README.md"
+cp LICENSE "$STAGE/LICENSE"
 case "$PLATFORM" in
   windows-*)
     cp packaging/start.bat "$STAGE/start.bat"

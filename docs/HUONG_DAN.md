@@ -14,6 +14,7 @@ rust-link là một audio node nói chuẩn **Lavalink v4**. Bot Discord đang d
 | WebSocket | `/v4/websocket` | `/v4/websocket` |
 | Thư mục log | `./logs/` | `./logs/` |
 | Plugin Java (LavaSrc, youtube-plugin...) | có | không dùng được |
+| Filter (equalizer, timescale, karaoke...) | đủ 10 filter | đủ 10 filter |
 | Cache audio + backup OneDrive | không | có |
 
 ## 2. Chuẩn bị máy chủ

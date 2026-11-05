@@ -26,4 +26,4 @@ Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 - Bộ test gồm codec, cache, API, voice giả lập và OneDrive giả lập; test YouTube thật cần bật riêng.
 - Đã xác nhận kết nối Discord voice với DAVE trên Windows bằng bản 0.1.0 và client giữ cổng; bản này sửa trực tiếp việc giữ cổng trong node.
-- Chỉ filter `volume` có tác dụng; live stream YouTube chưa hỗ trợ.
+- Hỗ trợ đủ 10 filter của Lavalink v4; live stream YouTube chưa hỗ trợ.
