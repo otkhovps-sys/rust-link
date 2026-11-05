@@ -281,17 +281,13 @@ fn classify_close(code: u16) -> CloseAction {
     }
 }
 
-/// `wss://{host}/?v=8`; explicit `ws://`/`wss://` endpoints are used as given.
+/// Preserve Discord's endpoint port when constructing the voice gateway URL.
 pub fn gateway_url(endpoint: &str) -> String {
     let endpoint = endpoint.trim().trim_end_matches('/');
     if endpoint.starts_with("ws://") || endpoint.starts_with("wss://") {
         return format!("{endpoint}/?v=8");
     }
     let host = endpoint.trim_start_matches("https://").trim_start_matches("http://");
-    let host = match host.rsplit_once(':') {
-        Some((h, port)) if port.parse::<u16>().is_ok() => h,
-        _ => host,
-    };
     format!("wss://{host}/?v=8")
 }
 
@@ -705,10 +701,23 @@ mod tests {
     fn builds_gateway_urls() {
         assert_eq!(
             gateway_url("c-sin05.discord.media:443"),
-            "wss://c-sin05.discord.media/?v=8"
+            "wss://c-sin05.discord.media:443/?v=8"
+        );
+        assert_eq!(
+            gateway_url("c-sin08-993a75b5.discord.media:2096"),
+            "wss://c-sin08-993a75b5.discord.media:2096/?v=8"
+        );
+        assert_eq!(
+            gateway_url(" https://c-sin05.discord.media:2053/ "),
+            "wss://c-sin05.discord.media:2053/?v=8"
         );
         assert_eq!(gateway_url("c-sin05.discord.media"), "wss://c-sin05.discord.media/?v=8");
         assert_eq!(gateway_url("ws://127.0.0.1:9000"), "ws://127.0.0.1:9000/?v=8");
+        assert_eq!(
+            gateway_url("wss://c-sin05.discord.media:2096/"),
+            "wss://c-sin05.discord.media:2096/?v=8"
+        );
+        assert_eq!(gateway_url("[::1]:2096"), "wss://[::1]:2096/?v=8");
     }
 
     #[test]

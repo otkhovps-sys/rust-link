@@ -319,6 +319,7 @@ Lệnh đầu trả về `4.1.1`. Lệnh thứ hai trả về JSON có `"loadTyp
 | `loadType: error` với YouTube | yt-dlp đã cũ hoặc thiếu Deno. Chạy `yt-dlp -U` và cài Deno. |
 | `HTTP Error 429` hoặc "Sign in to confirm you're not a bot" | YouTube đang giới hạn IP của máy chủ. Xuất cookies từ trình duyệt và thêm `extraArgs: ["--cookies", "/duong/dan/cookies.txt"]` vào mục `sources.ytdlp`. |
 | `cannot create cache directory` | User chạy node không có quyền ghi thư mục cache. Đổi `cache.directory` hoặc cấp quyền. |
+| `WebSocketClosedEvent` mã 4006 ngay khi vào voice | Bản 0.1.0 bỏ cổng của endpoint `host:port`, có thể kết nối nhầm cổng Discord. Bản sửa giữ nguyên cổng (ví dụ `:2096`); với binary 0.1.0 cũ, client có thể gửi `wss://host:port` để tránh lỗi này. |
 | `WebSocketClosedEvent` mã 4014 | Bot bị kick hoặc kênh voice bị xóa. Bot cần vào lại kênh. |
 | `WebSocketClosedEvent` mã 4017 | Client không gửi `voice.channelId`, không bật được DAVE. Cập nhật client. |
 | Bot vào kênh nhưng không có tiếng | Tường lửa chặn UDP gửi ra ngoài. Mở UDP outbound. |
