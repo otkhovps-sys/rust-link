@@ -154,3 +154,86 @@ async fn timescale_speeds_up_playback_and_position() {
         "position follows the track, not the clock: {position}"
     );
 }
+
+/// RMS of a decoded Opus packet.
+fn loudness(decoder: &mut audiopus::coder::Decoder, packet: &[u8]) -> f32 {
+    let mut pcm = vec![0f32; 5_760 * 2];
+    let packet = audiopus::packet::Packet::try_from(packet).unwrap();
+    let output = audiopus::MutSignals::try_from(&mut pcm[..]).unwrap();
+    let samples = decoder.decode_float(Some(packet), output, false).unwrap() * 2;
+    (pcm[..samples].iter().map(|s| s * s).sum::<f32>() / samples.max(1) as f32).sqrt()
+}
+
+#[tokio::test]
+async fn volume_and_filter_changes_are_heard_immediately() {
+    let node = TestNode::start(|c| c.audio.frame_buffer_ms = 400).await;
+    let (_info, encoded) = node.seed_cached_wav("instant tone", 4.0).await;
+    let (endpoint, _log, mut frames) = start_voice_server(EncryptionMode::AeadAes256GcmRtpSize).await;
+    let (mut events, session_id) = lavalink_ws(&node).await;
+    let path = format!("/v4/sessions/{session_id}/players/997");
+    let response = node
+        .patch(&path)
+        .json(&json!({
+            "voice": {"token": "t", "endpoint": endpoint, "sessionId": "s", "channelId": "1"},
+            "track": {"encoded": encoded}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    wait_event(&mut events, "TrackStartEvent").await;
+
+    let mut decoder = audiopus::coder::Decoder::new(audiopus::SampleRate::Hz48000, audiopus::Channels::Stereo).unwrap();
+    // (time received, loudness) of every frame.
+    let mut received = Vec::new();
+    async fn record(
+        frames: &mut tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>,
+        decoder: &mut audiopus::coder::Decoder,
+        out: &mut Vec<(tokio::time::Instant, f32)>,
+        ms: u64,
+    ) {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+        while let Ok(Some(frame)) = tokio::time::timeout_at(deadline, frames.recv()).await {
+            if frame.as_slice() != [0xF8, 0xFF, 0xFE] {
+                out.push((tokio::time::Instant::now(), loudness(decoder, &frame)));
+            }
+        }
+    }
+
+    record(&mut frames, &mut decoder, &mut received, 900).await;
+    let loud = received.iter().map(|r| r.1).fold(0.0, f32::max);
+    assert!(loud > 0.1, "tone is audible before the change: {loud}");
+
+    // Each change must be audible within 150 ms, not after the 400 ms frame buffer.
+    for (body, quiet_after) in [
+        (json!({"volume": 0}), true),
+        (json!({"volume": 100}), false),
+        (json!({"filters": {"volume": 0.0}}), true),
+    ] {
+        let changed_at = tokio::time::Instant::now();
+        let response = node.patch(&path).json(&body).send().await.unwrap();
+        assert!(response.status().is_success());
+        let start = received.len();
+        record(&mut frames, &mut decoder, &mut received, 600).await;
+        let late: Vec<f32> = received[start..]
+            .iter()
+            .filter(|(at, _)| at.duration_since(changed_at) > Duration::from_millis(150))
+            .map(|(_, level)| *level)
+            .collect();
+        assert!(late.len() > 10, "{body}: frames kept flowing ({})", late.len());
+        let wrong = late
+            .iter()
+            .filter(|level| {
+                if quiet_after {
+                    **level > loud * 0.05
+                } else {
+                    **level < loud * 0.5
+                }
+            })
+            .count();
+        assert_eq!(
+            wrong, 0,
+            "{body}: {wrong} frames still had the old level 150 ms after the change: {late:?}"
+        );
+    }
+}

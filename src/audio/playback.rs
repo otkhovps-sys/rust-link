@@ -2,6 +2,7 @@
 //! channel; an async sender paces them onto the voice UDP socket every 20 ms.
 
 use std::{
+    collections::VecDeque,
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -19,7 +20,7 @@ use tracing::{debug, warn};
 
 use super::{
     decoder::TrackDecoder,
-    encoder::{apply_gain, FramePacker, OpusEncoder, FRAME_MS, SILENCE_FRAME},
+    encoder::{apply_gain, FramePacker, OpusEncoder, FRAME_MS, SAMPLES_PER_FRAME, SILENCE_FRAME},
     filters::{FilterChain, Filters},
     voice_gateway::{VoiceHandle, VoiceTransport},
     FrameCounters,
@@ -30,6 +31,8 @@ use crate::{
 };
 
 const SILENCE_FRAMES_AFTER_AUDIO: u8 = 5;
+/// Interleaved stereo samples per millisecond at 48 kHz.
+const SAMPLES_PER_MS: f64 = 96.0;
 const NO_END_TIME: u64 = u64::MAX;
 
 #[derive(Debug, Clone)]
@@ -121,6 +124,11 @@ impl PlaybackControls {
 
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Invalidate every queued frame (the sender drops older generations).
+    fn bump_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 
     pub fn stop(&self) {
@@ -261,6 +269,63 @@ fn decode_thread(
     }
 }
 
+/// Recent decoded PCM before filters and volume, so a settings change can be re-rendered
+/// from the playback position instead of waiting for the queued frames to drain.
+struct PcmHistory {
+    samples: VecDeque<f32>,
+    start_ms: f64,
+    capacity: usize,
+}
+
+impl PcmHistory {
+    fn new(buffer_frames: usize) -> Self {
+        // Queued frames can cover more source time with timescale: keep a wide margin.
+        let ms = (buffer_frames as f64 * FRAME_MS as f64 * 4.0 + 1_000.0).min(30_000.0);
+        Self {
+            samples: VecDeque::new(),
+            start_ms: 0.0,
+            capacity: (ms * SAMPLES_PER_MS) as usize,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    fn end_ms(&self) -> f64 {
+        self.start_ms + self.samples.len() as f64 / SAMPLES_PER_MS
+    }
+
+    fn push(&mut self, timestamp_ms: u64, pcm: &[f32]) {
+        let timestamp_ms = timestamp_ms as f64;
+        if self.samples.is_empty() || (timestamp_ms - self.end_ms()).abs() > 100.0 {
+            self.samples.clear();
+            self.start_ms = timestamp_ms;
+        }
+        self.samples.extend(pcm.iter().copied());
+        let excess = self.samples.len().saturating_sub(self.capacity) & !1;
+        if excess > 0 {
+            self.samples.drain(..excess);
+            self.start_ms += excess as f64 / SAMPLES_PER_MS;
+        }
+    }
+
+    /// PCM from about `position_ms` to the end, starting on a 20 ms boundary counted back
+    /// from the end (so Opus passthrough can resume right after). Returns its start time.
+    fn replay_from(&self, position_ms: f64) -> Option<(f64, Vec<f32>)> {
+        let frames = self.samples.len() / 2;
+        let offset = ((position_ms - self.start_ms) * SAMPLES_PER_MS / 2.0).round();
+        if offset < 0.0 || offset as usize > frames {
+            return None;
+        }
+        let remaining = frames - offset as usize;
+        let aligned = remaining.div_ceil(SAMPLES_PER_FRAME) * SAMPLES_PER_FRAME;
+        let first = frames.saturating_sub(aligned);
+        let start_ms = self.start_ms + (first * 2) as f64 / SAMPLES_PER_MS;
+        Some((start_ms, self.samples.range(first * 2..).copied().collect()))
+    }
+}
+
 fn decode_frames(
     spec: SourceSpec,
     tx: &mpsc::Sender<FrameMsg>,
@@ -274,7 +339,9 @@ fn decode_frames(
     let mut filters_version = None;
     let mut pcm = Vec::with_capacity(8192);
     let mut filtered = Vec::with_capacity(8192);
+    let mut history = PcmHistory::new(settings.buffer_frames);
     let mut generation = 0u64;
+    let mut last_gain = controls.gain();
     // Track position (source time) at the start of the next frame. With timescale
     // filters each 20 ms frame covers `20 * speed * rate` ms of the source.
     let mut clock_ms = 0f64;
@@ -306,17 +373,52 @@ fn decode_frames(
             }
             packer.clear();
             chain.reset();
+            history.clear();
             generation = seek_generation;
         }
+        let mut changed = false;
         if let Some((version, filters)) = controls.filters_since(filters_version) {
             chain.configure(&filters);
+            changed = filters_version.is_some();
             filters_version = Some(version);
+        }
+        let gain = controls.gain();
+        if (gain - last_gain).abs() > 1e-4 {
+            last_gain = gain;
+            changed = true;
+        }
+        if changed {
+            // Drop the queued frames and redo them with the new settings from the current
+            // playback position: filter and volume changes are heard within ~20 ms.
+            let new_generation = controls.bump_generation();
+            if let Some((start_ms, replay)) = history.replay_from(controls.position() as f64) {
+                generation = new_generation;
+                packer.clear();
+                chain.reset();
+                clock_ms = start_ms;
+                filtered.clear();
+                chain.process(&replay, &mut filtered);
+                packer.push(&filtered);
+                let step = FRAME_MS as f64 * chain.time_factor();
+                while let Some(mut frame) = packer.take_frame() {
+                    apply_gain(&mut frame, gain);
+                    clock_ms += step;
+                    if !emit(encode(&frame)?, clock_ms, generation) {
+                        return Ok(());
+                    }
+                }
+            } else {
+                // Nothing to replay (e.g. right after a seek): keep the queued audio.
+                generation = new_generation;
+                packer.clear();
+                chain.reset();
+                clock_ms = controls.position() as f64;
+            }
         }
 
         pcm.clear();
         filtered.clear();
         let packet = decoder.next_into(&mut pcm)?;
-        let gain = controls.gain();
         let Some(packet) = packet else {
             chain.process(&pcm, &mut filtered);
             chain.flush(&mut filtered);
@@ -337,6 +439,7 @@ fn decode_frames(
             let _ = tx.blocking_send(FrameMsg::End);
             return Ok(());
         };
+        history.push(packet.timestamp_ms, &pcm);
 
         let neutral = (gain - 1.0).abs() < 1e-4 && chain.is_neutral();
         if settings.opus_passthrough && neutral && packer.is_empty() {
@@ -462,5 +565,46 @@ async fn send_loop(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_replays_from_a_frame_boundary() {
+        let mut history = PcmHistory::new(20);
+        // 100 ms of audio starting at 1 s, sample value = sample index.
+        let pcm: Vec<f32> = (0..9_600).map(|i| i as f32).collect();
+        history.push(1_000, &pcm);
+        assert!((history.end_ms() - 1_100.0).abs() < 1e-6);
+
+        let (start, replay) = history.replay_from(1_050.0).unwrap();
+        assert_eq!(replay.len() % (SAMPLES_PER_FRAME * 2), 0, "whole 20 ms frames");
+        assert!(
+            (1_040.0..=1_050.0).contains(&start),
+            "starts at or just before the position: {start}"
+        );
+        assert_eq!(*replay.last().unwrap(), 9_599.0, "ends where decoding stopped");
+        assert_eq!(replay[0], ((start - 1_000.0) * SAMPLES_PER_MS) as f32);
+
+        assert!(history.replay_from(900.0).is_none(), "before the history");
+        assert!(history.replay_from(1_200.0).is_none(), "after the history");
+
+        // A gap restarts the history.
+        history.push(5_000, &pcm[..960]);
+        assert!((history.start_ms - 5_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn history_is_bounded() {
+        let mut history = PcmHistory::new(1);
+        let second = vec![0.0f32; 96_000];
+        for i in 0..5 {
+            history.push(i * 1_000, &second);
+        }
+        assert!(history.samples.len() <= history.capacity);
+        assert!((history.end_ms() - 5_000.0).abs() < 1e-6);
     }
 }

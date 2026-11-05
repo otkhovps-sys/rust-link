@@ -388,7 +388,7 @@ impl SourceManager {
                 if let Err(e) = index.put_load(key, &json).await {
                     debug!(error = %e, "cannot store load result");
                 }
-                if self.load_cache_writes.fetch_add(1, Ordering::Relaxed) % 200 == 0 {
+                if self.load_cache_writes.fetch_add(1, Ordering::Relaxed).is_multiple_of(200) {
                     let _ = index.purge_loads(ttl_ms).await;
                 }
             }
