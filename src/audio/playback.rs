@@ -20,6 +20,7 @@ use tracing::{debug, warn};
 use super::{
     decoder::TrackDecoder,
     encoder::{apply_gain, FramePacker, OpusEncoder, FRAME_MS, SILENCE_FRAME},
+    filters::{FilterChain, Filters},
     voice_gateway::{VoiceHandle, VoiceTransport},
     FrameCounters,
 };
@@ -48,12 +49,14 @@ pub struct PlaybackControls {
     end_time_ms: AtomicU64,
     generation: AtomicU64,
     seek_request: Mutex<Option<(u64, u64)>>,
+    /// Filter settings and a version bumped on every change.
+    filters: Mutex<(u64, Arc<Filters>)>,
     cancel: CancellationToken,
     cancelled: Arc<AtomicBool>,
 }
 
 impl PlaybackControls {
-    pub fn new(start_ms: u64, paused: bool, gain: f32, end_time: Option<u64>) -> Arc<Self> {
+    pub fn new(start_ms: u64, paused: bool, gain: f32, end_time: Option<u64>, filters: Arc<Filters>) -> Arc<Self> {
         Arc::new(Self {
             paused: AtomicBool::new(paused),
             gain_bits: AtomicU32::new(gain.to_bits()),
@@ -61,6 +64,7 @@ impl PlaybackControls {
             end_time_ms: AtomicU64::new(end_time.unwrap_or(NO_END_TIME)),
             generation: AtomicU64::new(0),
             seek_request: Mutex::new((start_ms > 0).then_some((start_ms, 0))),
+            filters: Mutex::new((0, filters)),
             cancel: CancellationToken::new(),
             cancelled: Arc::new(AtomicBool::new(false)),
         })
@@ -84,6 +88,18 @@ impl PlaybackControls {
 
     pub fn position(&self) -> u64 {
         self.position_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn set_filters(&self, filters: Arc<Filters>) {
+        let mut current = self.filters.lock().unwrap();
+        current.0 += 1;
+        current.1 = filters;
+    }
+
+    /// The filters, when they changed since version `seen`.
+    fn filters_since(&self, seen: Option<u64>) -> Option<(u64, Arc<Filters>)> {
+        let current = self.filters.lock().unwrap();
+        (seen != Some(current.0)).then(|| (current.0, Arc::clone(&current.1)))
     }
 
     pub fn set_end_time(&self, end_time: Option<u64>) {
@@ -127,7 +143,8 @@ pub enum PlaybackOutcome {
 enum FrameMsg {
     Frame {
         opus: Vec<u8>,
-        position_ms: u64,
+        /// Track position once this frame has been played.
+        end_ms: u64,
         generation: u64,
     },
     End,
@@ -244,17 +261,29 @@ fn decode_frames(
     let mut decoder = spec.open(Arc::clone(&controls.cancelled))?;
     let mut encoder: Option<OpusEncoder> = None;
     let mut packer = FramePacker::default();
+    let mut chain = FilterChain::new();
+    let mut filters_version = None;
     let mut pcm = Vec::with_capacity(8192);
+    let mut filtered = Vec::with_capacity(8192);
     let mut generation = 0u64;
-    let mut frame_position = 0u64;
+    // Track position (source time) at the start of the next frame. With timescale
+    // filters each 20 ms frame covers `20 * speed * rate` ms of the source.
+    let mut clock_ms = 0f64;
 
-    let emit = |opus: Vec<u8>, position_ms: u64, generation: u64| -> bool {
+    let emit = |opus: Vec<u8>, end_ms: f64, generation: u64| -> bool {
         tx.blocking_send(FrameMsg::Frame {
             opus,
-            position_ms,
+            end_ms: end_ms.round() as u64,
             generation,
         })
         .is_ok()
+    };
+    let mut encode = |frame: &[f32]| -> anyhow::Result<Vec<u8>> {
+        let enc = match &mut encoder {
+            Some(enc) => enc,
+            slot => slot.insert(OpusEncoder::new(settings.opus_bitrate, settings.opus_complexity)?),
+        };
+        enc.encode(frame)
     };
 
     loop {
@@ -263,64 +292,66 @@ fn decode_frames(
         }
         if let Some((target, seek_generation)) = controls.take_seek() {
             match decoder.seek(target) {
-                Ok(actual) => frame_position = actual,
+                Ok(actual) => clock_ms = actual as f64,
                 Err(e) => warn!(target, error = %e, "seek failed"),
             }
             packer.clear();
+            chain.reset();
             generation = seek_generation;
+        }
+        if let Some((version, filters)) = controls.filters_since(filters_version) {
+            chain.configure(&filters);
+            filters_version = Some(version);
         }
 
         pcm.clear();
+        filtered.clear();
         let packet = decoder.next_into(&mut pcm)?;
         let gain = controls.gain();
         let Some(packet) = packet else {
-            packer.push(&pcm);
+            chain.process(&pcm, &mut filtered);
+            chain.flush(&mut filtered);
+            packer.push(&filtered);
             let mut frames = Vec::new();
             while let Some(frame) = packer.take_frame() {
                 frames.push(frame);
             }
             frames.extend(packer.take_padded());
+            let step = FRAME_MS as f64 * chain.time_factor();
             for mut frame in frames {
                 apply_gain(&mut frame, gain);
-                let enc = match &mut encoder {
-                    Some(enc) => enc,
-                    slot => slot.insert(OpusEncoder::new(settings.opus_bitrate, settings.opus_complexity)?),
-                };
-                if !emit(enc.encode(&frame)?, frame_position, generation) {
+                clock_ms += step;
+                if !emit(encode(&frame)?, clock_ms, generation) {
                     return Ok(());
                 }
-                frame_position += FRAME_MS;
             }
             let _ = tx.blocking_send(FrameMsg::End);
             return Ok(());
         };
 
-        let neutral = (gain - 1.0).abs() < 1e-4;
+        let neutral = (gain - 1.0).abs() < 1e-4 && chain.is_neutral();
         if settings.opus_passthrough && neutral && packer.is_empty() {
             if let Some(opus) = packet.opus {
-                frame_position = packet.timestamp_ms;
-                if !emit(opus, frame_position, generation) {
+                clock_ms = (packet.timestamp_ms + FRAME_MS) as f64;
+                if !emit(opus, clock_ms, generation) {
                     return Ok(());
                 }
-                frame_position += FRAME_MS;
                 continue;
             }
         }
 
-        if packer.is_empty() {
-            frame_position = packet.timestamp_ms;
+        if packer.is_empty() && !chain.has_latency() {
+            clock_ms = packet.timestamp_ms as f64;
         }
-        packer.push(&pcm);
+        chain.process(&pcm, &mut filtered);
+        packer.push(&filtered);
+        let step = FRAME_MS as f64 * chain.time_factor();
         while let Some(mut frame) = packer.take_frame() {
             apply_gain(&mut frame, gain);
-            let enc = match &mut encoder {
-                Some(enc) => enc,
-                slot => slot.insert(OpusEncoder::new(settings.opus_bitrate, settings.opus_complexity)?),
-            };
-            if !emit(enc.encode(&frame)?, frame_position, generation) {
+            clock_ms += step;
+            if !emit(encode(&frame)?, clock_ms, generation) {
                 return Ok(());
             }
-            frame_position += FRAME_MS;
         }
     }
 }
@@ -394,14 +425,14 @@ async fn send_loop(
             }
         };
         match message {
-            Ok(FrameMsg::Frame { opus, position_ms, .. }) => {
+            Ok(FrameMsg::Frame { opus, end_ms, .. }) => {
                 starving_since = None;
                 stuck_reported = false;
                 transport.set_speaking(true);
                 if let Err(e) = transport.send_opus(&opus).await {
                     debug!(error = %e, "udp send failed");
                 }
-                controls.position_ms.store(position_ms + FRAME_MS, Ordering::Relaxed);
+                controls.position_ms.store(end_ms, Ordering::Relaxed);
                 counters.sent.fetch_add(1, Ordering::Relaxed);
                 silence_left = SILENCE_FRAMES_AFTER_AUDIO;
             }

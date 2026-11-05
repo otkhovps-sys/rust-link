@@ -40,7 +40,7 @@ pub async fn info(State(ctx): State<AppState>) -> Json<Info> {
         jvm: "none (rust)".into(),
         lavaplayer: concat!("rust-link ", env!("CARGO_PKG_VERSION")).into(),
         source_managers: ctx.sources.source_names(),
-        filters: vec!["volume".into()],
+        filters: ctx.config.lavalink.filters.enabled_names(),
         plugins: vec![Plugin {
             name: "rust-link-cache".into(),
             version: env!("CARGO_PKG_VERSION").into(),

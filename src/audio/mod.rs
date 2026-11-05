@@ -1,10 +1,11 @@
-//! Audio pipeline: decode (symphonia) -> resample (rubato) -> Opus encode (libopus)
+//! Audio pipeline: decode (symphonia) -> resample (rubato) -> filters -> Opus encode (libopus)
 //! -> RTP + AEAD (+ DAVE E2EE) -> Discord voice UDP.
 
 pub mod crypto;
 pub mod dave;
 pub mod decoder;
 pub mod encoder;
+pub mod filters;
 pub mod playback;
 pub mod voice_gateway;
 

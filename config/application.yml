@@ -16,12 +16,25 @@ lavalink:
   statsInterval: 60              # giây giữa các op "stats"
   trackStuckThresholdMs: 10000   # không có frame trong khoảng này -> TrackStuckEvent
   resumeBacklogSize: 1000        # số event giữ lại khi session đang chờ resume
+  # Filter client được phép dùng (Lavalink: lavalink.server.filters).
+  # Filter tắt ở đây sẽ bị từ chối với lỗi 400 khi client gửi lên.
+  filters:
+    volume: true
+    equalizer: true
+    karaoke: true
+    timescale: true
+    tremolo: true
+    vibrato: true
+    distortion: true
+    rotation: true
+    channelMix: true
+    lowPass: true
 
 audio:
   opusBitrate: 128000
   opusComplexity: 10
   frameBufferMs: 400             # bộ đệm frame 20ms giữa decoder và UDP sender
-  opusPassthrough: true          # gửi thẳng gói Opus 48kHz stereo khi volume = 100 và không có filter
+  opusPassthrough: true          # gửi thẳng gói Opus 48kHz stereo khi volume = 100 và không bật filter nào
   encryptionMode: auto           # auto | aead_aes256_gcm_rtpsize | aead_xchacha20_poly1305_rtpsize
   dave: true                     # hỗ trợ Discord E2EE (DAVE); cần client gửi voice.channelId
   udpKeepaliveSecs: 5

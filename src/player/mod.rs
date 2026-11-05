@@ -7,7 +7,6 @@ use std::sync::{
     Arc, Weak,
 };
 
-use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, info};
 
@@ -22,6 +21,7 @@ use crate::{
         track_codec, ApiError,
     },
     audio::{
+        filters::Filters,
         playback::{self, PlaybackControls, PlaybackOutcome},
         voice_gateway::{VoiceConnectInfo, VoiceConnection, VoiceEvent, VoiceHandle},
     },
@@ -38,8 +38,7 @@ struct PlayerInner {
     track: Option<Track>,
     volume: u16,
     paused: bool,
-    filters: Value,
-    filter_volume: f32,
+    filters: Arc<Filters>,
     end_time: Option<u64>,
     voice: VoiceState,
     active: Option<ActivePlayback>,
@@ -47,7 +46,7 @@ struct PlayerInner {
 
 impl PlayerInner {
     fn gain(&self) -> f32 {
-        self.volume as f32 / 100.0 * self.filter_volume
+        self.volume as f32 / 100.0
     }
 }
 
@@ -83,8 +82,7 @@ impl Player {
                 track: None,
                 volume: 100,
                 paused: false,
-                filters: json!({}),
-                filter_volume: 1.0,
+                filters: Arc::default(),
                 end_time: None,
                 voice: VoiceState::default(),
                 active: None,
@@ -153,7 +151,7 @@ impl Player {
             paused: inner.paused,
             state: self.state(),
             voice: inner.voice.clone(),
-            filters: inner.filters.clone(),
+            filters: (*inner.filters).clone(),
         }
     }
 
@@ -203,8 +201,8 @@ impl Player {
                 return Err(ApiError::bad_request("Volume must be between 0 and 1000"));
             }
         }
-        let filter_volume = match &req.filters {
-            Some(filters) => Some(parse_filter_volume(filters)?),
+        let filters = match &req.filters {
+            Some(filters) => Some(self.parse_filters(filters)?),
             None => None,
         };
         if let Some(voice) = &req.voice {
@@ -227,9 +225,9 @@ impl Player {
         if let Some(volume) = req.volume {
             inner.volume = volume as u16;
         }
-        if let (Some(filters), Some(volume)) = (req.filters, filter_volume) {
-            inner.filters = filters;
-            inner.filter_volume = volume;
+        let filters_changed = filters.is_some();
+        if let Some(filters) = filters {
+            inner.filters = Arc::new(filters);
         }
         let new_track = matches!(action, TrackAction::Play(_));
         if let Some(end_time) = req.end_time {
@@ -242,6 +240,9 @@ impl Player {
             active.controls.set_paused(inner.paused);
             active.controls.set_gain(inner.gain());
             active.controls.set_end_time(inner.end_time);
+            if filters_changed {
+                active.controls.set_filters(Arc::clone(&inner.filters));
+            }
         }
 
         match action {
@@ -258,6 +259,24 @@ impl Player {
             }
         }
         Ok(self.model(&inner))
+    }
+
+    /// Validate `filters` and reject the ones disabled in `lavalink.server.filters`.
+    fn parse_filters(&self, value: &serde_json::Value) -> Result<Filters, ApiError> {
+        let filters = Filters::parse(value).map_err(ApiError::bad_request)?;
+        let toggles = &self.ctx.config.lavalink.filters;
+        let disabled: Vec<&str> = filters
+            .present()
+            .into_iter()
+            .filter(|name| !toggles.is_enabled(name))
+            .collect();
+        if !disabled.is_empty() {
+            return Err(ApiError::bad_request(format!(
+                "Following filters are disabled in the config: {}",
+                disabled.join(", ")
+            )));
+        }
+        Ok(filters)
     }
 
     fn apply_voice(&self, inner: &mut PlayerInner, voice: VoiceState) {
@@ -292,7 +311,13 @@ impl Player {
         }
         track.info.position = start_ms;
         let id = self.playback_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let controls = PlaybackControls::new(start_ms, inner.paused, inner.gain(), inner.end_time);
+        let controls = PlaybackControls::new(
+            start_ms,
+            inner.paused,
+            inner.gain(),
+            inner.end_time,
+            Arc::clone(&inner.filters),
+        );
         inner.track = Some(track.clone());
         inner.active = Some(ActivePlayback {
             id,
@@ -391,24 +416,5 @@ impl Player {
         let mut inner = self.inner.lock().await;
         self.stop_current(&mut inner, TrackEndReason::Cleanup);
         self.voice.replace(None);
-    }
-}
-
-/// `filters.volume` multiplier (0.0 - 5.0); other filters are stored and echoed back.
-fn parse_filter_volume(filters: &Value) -> Result<f32, ApiError> {
-    let Some(map) = filters.as_object() else {
-        return Err(ApiError::bad_request("filters must be an object"));
-    };
-    match map.get("volume") {
-        None | Some(Value::Null) => Ok(1.0),
-        Some(v) => {
-            let volume = v
-                .as_f64()
-                .ok_or_else(|| ApiError::bad_request("filters.volume must be a number"))?;
-            if !(0.0..=5.0).contains(&volume) {
-                return Err(ApiError::bad_request("filters.volume must be between 0.0 and 5.0"));
-            }
-            Ok(volume as f32)
-        }
     }
 }

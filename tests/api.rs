@@ -172,6 +172,109 @@ async fn track_start_has_current_player_state() {
 }
 
 #[tokio::test]
+async fn filters_are_validated_normalized_and_listed() {
+    let node = TestNode::start(|c| c.lavalink.filters.karaoke = false).await;
+    let info: Value = node.get("/v4/info").send().await.unwrap().json().await.unwrap();
+    let names: Vec<&str> = info["filters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "volume",
+            "equalizer",
+            "timescale",
+            "tremolo",
+            "vibrato",
+            "distortion",
+            "rotation",
+            "channelMix",
+            "lowPass"
+        ]
+    );
+
+    let (_events, session_id) = common::voice_mock::lavalink_ws(&node).await;
+    let path = format!("/v4/sessions/{session_id}/players/7");
+    let player: Value = node
+        .patch(&path)
+        .json(&json!({"filters": {
+            "volume": 0.8,
+            "equalizer": [{"band": 0, "gain": 0.2}, {"band": 14, "gain": 3}],
+            "timescale": {"speed": 1.2, "pitch": 1.1},
+            "tremolo": {"depth": 0.3},
+            "vibrato": null,
+            "rotation": {"rotationHz": 0.2},
+            "distortion": {"sinScale": 2},
+            "channelMix": {"leftToRight": 0.5},
+            "lowPass": {"smoothing": 10},
+            "pluginFilters": {"some-plugin": {"enabled": true}}
+        }}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let filters = &player["filters"];
+    assert_eq!(filters["volume"], 0.8);
+    assert_eq!(
+        filters["equalizer"],
+        json!([{"band": 0, "gain": 0.2}, {"band": 14, "gain": 1.0}])
+    );
+    assert_eq!(filters["timescale"]["rate"], 1.0);
+    assert_eq!(filters["tremolo"]["frequency"], 2.0);
+    assert!(filters.get("vibrato").is_none());
+    assert_eq!(filters["distortion"]["cosScale"], 1.0);
+    assert_eq!(filters["channelMix"]["rightToRight"], 1.0);
+    assert_eq!(filters["pluginFilters"]["some-plugin"]["enabled"], true);
+
+    // A PATCH without `filters` keeps them; `filters: {}` clears them.
+    let kept: Value = node
+        .patch(&path)
+        .json(&json!({"volume": 90}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(kept["filters"], player["filters"]);
+    let cleared: Value = node
+        .patch(&path)
+        .json(&json!({"filters": {}}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(cleared["filters"], json!({}));
+
+    for (body, message) in [
+        (
+            json!({"filters": {"karaoke": {}}}),
+            "Following filters are disabled in the config: karaoke",
+        ),
+        (
+            json!({"filters": {"timescale": {"speed": 0}}}),
+            "filters.timescale.speed must be greater than 0",
+        ),
+        (
+            json!({"filters": {"volume": 9}}),
+            "filters.volume must be between 0.0 and 5.0",
+        ),
+    ] {
+        let response = node.patch(&path).json(&body).send().await.unwrap();
+        assert_eq!(response.status(), 400);
+        let error: Value = response.json().await.unwrap();
+        assert_eq!(error["message"], message);
+    }
+}
+
+#[tokio::test]
 async fn websocket_ready_players_and_resume() {
     let node = TestNode::start(|_| {}).await;
     let (_, encoded) = node.seed_cached_wav("resume tone", 1.0).await;

@@ -292,7 +292,7 @@ Lavalink4NET, Lavalink-Client cho JDA, DisGo và các thư viện khác khai bá
 - **Discord E2EE (DAVE):** Discord yêu cầu mã hóa đầu-cuối cho voice. rust-link chỉ bật DAVE khi client gửi kèm `voice.channelId`, việc mà các client hỗ trợ Lavalink 4.1+ đã làm. Client quá cũ không gửi trường này thì Discord có thể đóng kết nối với mã 4017, bot sẽ nhận `WebSocketClosedEvent`.
 - **Tìm kiếm:** dùng `ytsearch:`, `ytmsearch:` (xử lý như `ytsearch:`), `scsearch:`, `cachesearch:` (chỉ tìm trong cache), hoặc dán thẳng URL.
 - **Nhiều node:** có thể khai báo rust-link song song với Lavalink cũ trong danh sách node của client để chuyển dần.
-- **Filter:** chỉ filter `volume` có tác dụng. Equalizer, timescale và các filter khác được chấp nhận nhưng không thay đổi âm thanh.
+- **Filter:** hỗ trợ đủ 10 filter của Lavalink v4: `volume`, `equalizer` (15 band), `karaoke`, `timescale` (speed/pitch/rate, dùng cho nightcore và vaporwave), `tremolo`, `vibrato`, `rotation` (8D), `distortion`, `channelMix`, `lowPass`. Filter mới có hiệu lực sau khoảng `audio.frameBufferMs` (mặc định 0,4 giây), lúc phần âm thanh đã nằm trong bộ đệm phát hết. Khi bật `timescale`, vị trí bài hát vẫn tính theo thời gian của bài, nên thanh tiến độ trên bot chạy nhanh hoặc chậm theo `speed × rate`. `pluginFilters` được lưu và trả lại nhưng không xử lý, vì rust-link không chạy plugin của Lavalink. Muốn khóa filter nào thì đặt `false` trong `lavalink.filters` (hoặc `lavalink.server.filters` nếu dùng file của Lavalink).
 
 ## 8. Kiểm tra node hoạt động
 

@@ -3,6 +3,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+pub use crate::audio::filters::Filters;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
@@ -140,7 +142,7 @@ pub struct Player {
     pub paused: bool,
     pub state: PlayerState,
     pub voice: VoiceState,
-    pub filters: Value,
+    pub filters: Filters,
 }
 
 /// Deserializes `null` as `Some(None)` and a missing field (with `#[serde(default)]`) as `None`.

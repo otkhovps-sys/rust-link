@@ -106,3 +106,51 @@ async fn plays_cached_track_with_xchacha20() {
     )
     .await;
 }
+
+#[tokio::test]
+async fn timescale_speeds_up_playback_and_position() {
+    let node = TestNode::start(|_| {}).await;
+    let (_info, encoded) = node.seed_cached_wav("fast tone", 1.5).await;
+    let (endpoint, _log, mut frames) = start_voice_server(EncryptionMode::AeadAes256GcmRtpSize).await;
+    let (mut events, session_id) = lavalink_ws(&node).await;
+
+    let response = node
+        .patch(&format!("/v4/sessions/{session_id}/players/998"))
+        .json(&json!({
+            "voice": {"token": "voice-token", "endpoint": endpoint, "sessionId": "voice-session", "channelId": "555"},
+            "track": {"encoded": encoded},
+            "filters": {"timescale": {"speed": 1.5}, "equalizer": [{"band": 2, "gain": 0.2}]}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+
+    wait_event(&mut events, "TrackStartEvent").await;
+    let end = wait_event(&mut events, "TrackEndEvent").await;
+    assert_eq!(end["reason"], "finished");
+
+    let mut audio = 0;
+    while let Ok(Some(frame)) = tokio::time::timeout(Duration::from_millis(500), frames.recv()).await {
+        if frame.as_slice() != [0xF8, 0xFF, 0xFE] {
+            assert_eq!(opus_samples(&frame), 960);
+            audio += 1;
+        }
+    }
+    // 1.5 s of audio at 1.5x speed is played in about 1 s (50 frames).
+    assert!((47..=53).contains(&audio), "got {audio} audio frames");
+
+    let state: Value = node
+        .get(&format!("/v4/sessions/{session_id}/players/998"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let position = state["state"]["position"].as_u64().unwrap();
+    assert!(
+        (1400..=1600).contains(&position),
+        "position follows the track, not the clock: {position}"
+    );
+}

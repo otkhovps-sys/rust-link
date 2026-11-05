@@ -49,6 +49,69 @@ pub struct LavalinkConfig {
     pub track_stuck_threshold_ms: u64,
     /// Maximum number of events kept for a detached (resumable) session.
     pub resume_backlog_size: usize,
+    /// Filters clients may use (Lavalink: `lavalink.server.filters`).
+    pub filters: FilterToggles,
+}
+
+/// Per-filter switches. A disabled filter in a player update is rejected with 400.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct FilterToggles {
+    pub volume: bool,
+    pub equalizer: bool,
+    pub karaoke: bool,
+    pub timescale: bool,
+    pub tremolo: bool,
+    pub vibrato: bool,
+    pub distortion: bool,
+    pub rotation: bool,
+    pub channel_mix: bool,
+    pub low_pass: bool,
+}
+
+impl Default for FilterToggles {
+    fn default() -> Self {
+        Self {
+            volume: true,
+            equalizer: true,
+            karaoke: true,
+            timescale: true,
+            tremolo: true,
+            vibrato: true,
+            distortion: true,
+            rotation: true,
+            channel_mix: true,
+            low_pass: true,
+        }
+    }
+}
+
+impl FilterToggles {
+    /// `name` as used by Lavalink (`channelMix`, `lowPass`, ...).
+    pub fn is_enabled(&self, name: &str) -> bool {
+        match name {
+            "volume" => self.volume,
+            "equalizer" => self.equalizer,
+            "karaoke" => self.karaoke,
+            "timescale" => self.timescale,
+            "tremolo" => self.tremolo,
+            "vibrato" => self.vibrato,
+            "distortion" => self.distortion,
+            "rotation" => self.rotation,
+            "channelMix" => self.channel_mix,
+            "lowPass" => self.low_pass,
+            _ => false,
+        }
+    }
+
+    /// Enabled filters, in the order Lavalink lists them in `/v4/info`.
+    pub fn enabled_names(&self) -> Vec<String> {
+        crate::audio::filters::FILTER_NAMES
+            .iter()
+            .filter(|name| self.is_enabled(name))
+            .map(|name| name.to_string())
+            .collect()
+    }
 }
 
 impl Default for LavalinkConfig {
@@ -58,6 +121,7 @@ impl Default for LavalinkConfig {
             stats_interval: 60,
             track_stuck_threshold_ms: 10_000,
             resume_backlog_size: 1_000,
+            filters: FilterToggles::default(),
         }
     }
 }
@@ -349,6 +413,11 @@ impl AppConfig {
                 self.lavalink.track_stuck_threshold_ms = v;
             }
         }
+        if !has(&["lavalink", "filters"]) {
+            if let Some(toggles) = server("filters").and_then(|v| serde_norway::from_value(v.clone()).ok()) {
+                self.lavalink.filters = toggles;
+            }
+        }
         if !has(&["audio", "opusComplexity"]) {
             if let Some(v) = server("opusEncodingQuality").and_then(as_u64) {
                 self.audio.opus_complexity = v.min(10) as u8;
@@ -581,6 +650,8 @@ lavalink:
     filters:
       volume: true
       equalizer: true
+      karaoke: false
+      channelMix: true
     bufferDurationMs: 400
     frameBufferDurationMs: 5000
     opusEncodingQuality: 8
@@ -624,6 +695,12 @@ logging:
         assert_eq!(cfg.lavalink.track_stuck_threshold_ms, 8000);
         assert_eq!(cfg.audio.opus_complexity, 8);
         assert_eq!(cfg.audio.frame_buffer_ms, 400);
+        assert!(!cfg.lavalink.filters.karaoke);
+        assert!(
+            cfg.lavalink.filters.timescale,
+            "filters missing from the list stay enabled"
+        );
+        assert!(!cfg.lavalink.filters.enabled_names().contains(&"karaoke".to_string()));
         assert!(cfg.sources.youtube, "youtube-plugin enabled means YouTube stays on");
         assert!(!cfg.sources.soundcloud);
         assert!(cfg.sources.http);
