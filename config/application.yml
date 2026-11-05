@@ -38,6 +38,7 @@ audio:
   encryptionMode: auto           # auto | aead_aes256_gcm_rtpsize | aead_xchacha20_poly1305_rtpsize
   dave: true                     # hỗ trợ Discord E2EE (DAVE); cần client gửi voice.channelId
   udpKeepaliveSecs: 5
+  shareLiveStreams: true         # nhiều server phát cùng một live stream (cùng filter, âm lượng) dùng chung một lần giải mã
 
 sources:
   youtube: true

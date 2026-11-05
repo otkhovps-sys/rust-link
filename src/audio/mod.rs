@@ -6,6 +6,7 @@ pub mod dave;
 pub mod decoder;
 pub mod encoder;
 pub mod filters;
+pub mod live;
 pub mod playback;
 pub mod voice_gateway;
 

@@ -214,3 +214,93 @@ async fn hls_live_window_plays_continuously() {
         .unwrap();
     assert_eq!(deleted.status(), 204);
 }
+
+/// Audio frames received on each receiver during `ms`.
+async fn count_both(
+    a: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    b: &mut mpsc::UnboundedReceiver<Vec<u8>>,
+    ms: u64,
+) -> (usize, usize) {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+    let (mut count_a, mut count_b) = (0, 0);
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return (count_a, count_b),
+            Some(frame) = a.recv() => if frame.as_slice() != SILENCE { count_a += 1 },
+            Some(frame) = b.recv() => if frame.as_slice() != SILENCE { count_b += 1 },
+        }
+    }
+}
+
+fn most_fetches_of_a_segment(server: &media_server::MediaServer) -> usize {
+    let requests = server.requests.lock().unwrap();
+    let mut counts = std::collections::HashMap::new();
+    for request in requests.iter().filter(|r| r.path.ends_with(".ts")) {
+        *counts.entry(request.path.clone()).or_insert(0) += 1;
+    }
+    counts.values().copied().max().unwrap_or(0)
+}
+
+async fn two_listeners(
+    share: bool,
+) -> (
+    TestNode,
+    media_server::MediaServer,
+    String,
+    [mpsc::UnboundedReceiver<Vec<u8>>; 2],
+) {
+    let media = tempfile::tempdir().unwrap();
+    assert!(ffmpeg_hls(media.path(), 12, "unused.m3u8"));
+    let server = media_server::serve(media.keep(), 12).await;
+    let node = TestNode::start(move |c| c.audio.share_live_streams = share).await;
+    let (_events, session_id) = lavalink_ws(&node).await;
+    let result = load(&node, &format!("{}/live.m3u8", server.base)).await;
+    let encoded = result["data"]["encoded"].as_str().unwrap().to_string();
+    let (endpoint_a, _log_a, frames_a) = start_voice_server(EncryptionMode::AeadAes256GcmRtpSize).await;
+    let (endpoint_b, _log_b, frames_b) = start_voice_server(EncryptionMode::AeadAes256GcmRtpSize).await;
+    play(&node, &session_id, 81, &endpoint_a, &encoded).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    play(&node, &session_id, 82, &endpoint_b, &encoded).await;
+    (node, server, session_id, [frames_a, frames_b])
+}
+
+#[tokio::test]
+async fn players_on_the_same_live_stream_share_one_decode() {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return;
+    }
+    let (node, server, session_id, [mut frames_a, mut frames_b]) = two_listeners(true).await;
+    let (a, b) = count_both(&mut frames_a, &mut frames_b, 4_000).await;
+    assert!(a >= 140 && b >= 140, "both servers hear the stream: {a} / {b} frames");
+    let hub = node.ctx.live.as_ref().unwrap();
+    assert_eq!(hub.channel_count(), 1, "one shared channel");
+    assert_eq!(most_fetches_of_a_segment(&server), 1, "each segment downloaded once");
+
+    // Another volume needs other packets: that player moves to its own channel.
+    let response = node
+        .patch(&format!("/v4/sessions/{session_id}/players/82"))
+        .json(&json!({"volume": 50}))
+        .send()
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let (_, b_after) = count_both(&mut frames_a, &mut frames_b, 3_000).await;
+    assert!(b_after >= 90, "still playing after the switch: {b_after} frames");
+    assert_eq!(hub.channel_count(), 2);
+}
+
+#[tokio::test]
+async fn live_sharing_can_be_disabled() {
+    if Command::new("ffmpeg").arg("-version").output().is_err() {
+        return;
+    }
+    let (node, server, _session_id, [mut frames_a, mut frames_b]) = two_listeners(false).await;
+    let (a, b) = count_both(&mut frames_a, &mut frames_b, 3_000).await;
+    assert!(a >= 100 && b >= 100, "{a} / {b}");
+    assert!(node.ctx.live.is_none());
+    assert_eq!(
+        most_fetches_of_a_segment(&server),
+        2,
+        "each player downloads on its own"
+    );
+}

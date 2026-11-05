@@ -354,8 +354,10 @@ impl Player {
         let voice = Arc::clone(&self.voice);
         let settings = self.ctx.playback_settings();
         let counters = Arc::clone(&self.ctx.frames);
+        let live = self.ctx.live.clone();
         tokio::spawn(async move {
-            let outcome = playback::run_track(cache, track.info, controls, voice, settings, counters, on_stuck).await;
+            let outcome =
+                playback::run_track(cache, track.info, controls, voice, settings, counters, live, on_stuck).await;
             if let Some(player) = weak.upgrade() {
                 player.on_playback_finished(id, outcome).await;
             }

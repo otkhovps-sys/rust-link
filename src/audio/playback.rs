@@ -30,7 +30,7 @@ use crate::{
     cache::{progressive::ProgressiveReader, CacheManager, PlayableSource},
 };
 
-const SILENCE_FRAMES_AFTER_AUDIO: u8 = 5;
+pub(super) const SILENCE_FRAMES_AFTER_AUDIO: u8 = 5;
 /// Interleaved stereo samples per millisecond at 48 kHz.
 const SAMPLES_PER_MS: f64 = 96.0;
 const NO_END_TIME: u64 = u64::MAX;
@@ -54,7 +54,7 @@ pub struct PlaybackControls {
     seek_request: Mutex<Option<(u64, u64)>>,
     /// Filter settings and a version bumped on every change.
     filters: Mutex<(u64, Arc<Filters>)>,
-    cancel: CancellationToken,
+    pub(super) cancel: CancellationToken,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -97,6 +97,19 @@ impl PlaybackControls {
         let mut current = self.filters.lock().unwrap();
         current.0 += 1;
         current.1 = filters;
+    }
+
+    pub(super) fn current_filters(&self) -> (u64, Arc<Filters>) {
+        let current = self.filters.lock().unwrap();
+        (current.0, Arc::clone(&current.1))
+    }
+
+    pub(super) fn filters_version(&self) -> u64 {
+        self.filters.lock().unwrap().0
+    }
+
+    pub(super) fn advance_position(&self, ms: u64) {
+        self.position_ms.fetch_add(ms, Ordering::Relaxed);
     }
 
     /// The filters, when they changed since version `seen`.
@@ -148,7 +161,7 @@ pub enum PlaybackOutcome {
     Stopped,
 }
 
-enum FrameMsg {
+pub(super) enum FrameMsg {
     Frame {
         opus: Vec<u8>,
         /// Track position once this frame has been played.
@@ -159,7 +172,7 @@ enum FrameMsg {
     Error(String),
 }
 
-enum SourceSpec {
+pub(super) enum SourceSpec {
     File {
         path: std::path::PathBuf,
         container: Option<String>,
@@ -210,26 +223,9 @@ impl SourceSpec {
     }
 }
 
-/// Acquire the audio (cache hit / OneDrive pull / download), decode and send it.
-pub async fn run_track(
-    cache: Arc<CacheManager>,
-    info: TrackInfo,
-    controls: Arc<PlaybackControls>,
-    voice: Arc<VoiceHandle>,
-    settings: PlaybackSettings,
-    counters: Arc<FrameCounters>,
-    on_stuck: impl Fn() + Send + 'static,
-) -> PlaybackOutcome {
-    let acquired = tokio::select! {
-        _ = controls.cancel.cancelled() => return PlaybackOutcome::Stopped,
-        result = cache.acquire(&info) => match result {
-            Ok(acquired) => acquired,
-            Err(e) => return PlaybackOutcome::Failed(format!("{e:#}")),
-        },
-    };
-    debug!(title = %info.title, outcome = ?acquired.outcome, "audio source acquired");
-    let _lease = acquired.lease;
-    let spec = match acquired.source {
+/// Decoder input for an acquired source.
+pub(super) fn source_spec(source: PlayableSource, controls: &PlaybackControls) -> SourceSpec {
+    match source {
         PlayableSource::File { path, container } => SourceSpec::File { path, container },
         PlayableSource::Progressive { progress } => SourceSpec::Progressive(progress),
         PlayableSource::Remote { mut reader, container } => {
@@ -240,7 +236,35 @@ pub async fn run_track(
             let reader = stream.into_blocking_reader(&tokio::runtime::Handle::current(), controls.cancel.clone());
             SourceSpec::Live(Box::new(ReadOnlySource::new(reader)))
         }
+    }
+}
+
+/// Acquire the audio (cache hit / OneDrive pull / download), decode and send it. Live
+/// streams go through `live` when given, shared with other players.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_track(
+    cache: Arc<CacheManager>,
+    info: TrackInfo,
+    controls: Arc<PlaybackControls>,
+    voice: Arc<VoiceHandle>,
+    settings: PlaybackSettings,
+    counters: Arc<FrameCounters>,
+    live: Option<Arc<super::live::LiveHub>>,
+    on_stuck: impl Fn() + Send + 'static,
+) -> PlaybackOutcome {
+    if let (Some(hub), true) = (&live, info.is_stream) {
+        return super::live::play_shared(hub, &cache, &info, &controls, &voice, &settings, &counters, on_stuck).await;
+    }
+    let acquired = tokio::select! {
+        _ = controls.cancel.cancelled() => return PlaybackOutcome::Stopped,
+        result = cache.acquire(&info) => match result {
+            Ok(acquired) => acquired,
+            Err(e) => return PlaybackOutcome::Failed(format!("{e:#}")),
+        },
     };
+    debug!(title = %info.title, outcome = ?acquired.outcome, "audio source acquired");
+    let _lease = acquired.lease;
+    let spec = source_spec(acquired.source, &controls);
 
     let (tx, rx) = mpsc::channel(settings.buffer_frames.max(2));
     let thread_controls = Arc::clone(&controls);
@@ -255,7 +279,7 @@ pub async fn run_track(
     send_loop(rx, &controls, &voice, &settings, &counters, on_stuck).await
 }
 
-fn decode_thread(
+pub(super) fn decode_thread(
     spec: SourceSpec,
     tx: mpsc::Sender<FrameMsg>,
     controls: Arc<PlaybackControls>,
@@ -468,7 +492,7 @@ fn decode_frames(
     }
 }
 
-async fn send_silence(transport: &Option<Arc<VoiceTransport>>) {
+pub(super) async fn send_silence(transport: &Option<Arc<VoiceTransport>>) {
     if let Some(transport) = transport {
         for _ in 0..SILENCE_FRAMES_AFTER_AUDIO {
             let _ = transport.send_opus(&SILENCE_FRAME).await;

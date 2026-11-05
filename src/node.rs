@@ -24,6 +24,8 @@ pub struct NodeContext {
     pub sources: Arc<SourceManager>,
     pub sessions: SessionManager,
     pub frames: Arc<FrameCounters>,
+    /// Shared live streams (`audio.shareLiveStreams`).
+    pub live: Option<Arc<crate::audio::live::LiveHub>>,
     pub system: SystemSampler,
     pub started_at: Instant,
     pub shutdown: CancellationToken,
@@ -124,6 +126,10 @@ pub async fn build(config: AppConfig, shutdown: CancellationToken) -> anyhow::Re
         sources,
         sessions: SessionManager::default(),
         frames: Arc::new(FrameCounters::default()),
+        live: config
+            .audio
+            .share_live_streams
+            .then(|| Arc::new(crate::audio::live::LiveHub::default())),
         system: SystemSampler::default(),
         started_at: Instant::now(),
         shutdown: shutdown.clone(),

@@ -140,6 +140,8 @@ pub struct AudioConfig {
     /// Advertise DAVE (Discord E2EE) support during voice identify.
     pub dave: bool,
     pub udp_keepalive_secs: u64,
+    /// Players on the same live stream with the same filters and volume share one decode.
+    pub share_live_streams: bool,
 }
 
 impl Default for AudioConfig {
@@ -152,6 +154,7 @@ impl Default for AudioConfig {
             encryption_mode: "auto".into(),
             dave: true,
             udp_keepalive_secs: 5,
+            share_live_streams: true,
         }
     }
 }
