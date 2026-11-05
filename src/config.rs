@@ -232,6 +232,8 @@ pub struct CacheConfig {
     /// Start playback while the file is still being downloaded.
     pub progressive_playback: bool,
     pub max_file_size: ByteSize,
+    /// Tracks longer than this are streamed from the origin instead of cached (0 = no limit).
+    pub max_track_duration_secs: u64,
     pub file_extension: String,
 }
 
@@ -248,6 +250,7 @@ impl Default for CacheConfig {
             evict_unsynced: false,
             progressive_playback: true,
             max_file_size: ByteSize::gib(1),
+            max_track_duration_secs: 7_200,
             file_extension: "opus".into(),
         }
     }

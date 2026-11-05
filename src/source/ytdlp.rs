@@ -4,6 +4,7 @@
 //! yt-dlp options.
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -51,6 +52,29 @@ struct YtDlpInfo {
     ie_key: Option<String>,
     isrc: Option<String>,
     entries: Option<Vec<Option<YtDlpInfo>>>,
+    protocol: Option<String>,
+    http_headers: Option<HashMap<String, String>>,
+    ext: Option<String>,
+}
+
+/// Direct URL of the selected format, for playback without yt-dlp in the middle.
+#[derive(Debug, Clone)]
+pub struct MediaUrl {
+    pub url: String,
+    /// `https`, `m3u8_native`, `http_dash_segments`, ...
+    pub protocol: String,
+    pub headers: HashMap<String, String>,
+    pub ext: Option<String>,
+}
+
+impl MediaUrl {
+    pub fn is_hls(&self) -> bool {
+        self.protocol.starts_with("m3u8")
+    }
+
+    pub fn is_plain_http(&self) -> bool {
+        matches!(self.protocol.as_str(), "http" | "https")
+    }
 }
 
 pub enum Resolved {
@@ -143,6 +167,21 @@ impl YtDlp {
         to_track_info(&info, "ytdlp")
             .map(Resolved::Track)
             .ok_or_else(|| SourceError::Parse("yt-dlp returned no usable track".into()))
+    }
+
+    /// Resolve the media URL of `format` (defaults to `sources.ytdlp.format`).
+    pub async fn media_url(&self, url: &str, format: Option<&str>) -> Result<MediaUrl, SourceError> {
+        let format = format.unwrap_or(&self.cfg.format);
+        let info = self.run_json(&["-f", format, "--no-playlist"], url).await?;
+        let media_url = info
+            .url
+            .ok_or_else(|| SourceError::Parse("yt-dlp selected a format without a direct URL".into()))?;
+        Ok(MediaUrl {
+            url: media_url,
+            protocol: info.protocol.unwrap_or_else(|| "https".into()),
+            headers: info.http_headers.unwrap_or_default(),
+            ext: info.ext,
+        })
     }
 
     /// Stream the selected audio format to stdout (`-o -`).

@@ -183,6 +183,11 @@ pub enum PlayableSource {
     Progressive { progress: Arc<DownloadProgress> },
     /// Live stream that is never cached.
     Stream(ByteStream),
+    /// Seekable remote file streamed without caching (too long or too large).
+    Remote {
+        reader: crate::source::remote::RangedReader,
+        container: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,7 +200,7 @@ pub enum CacheOutcome {
     Miss,
     /// Attached to a download already in progress.
     Joined,
-    /// Not cacheable (live stream or cache disabled).
+    /// Not cached: live stream, cache disabled, or too long / too large to cache.
     Bypass,
 }
 

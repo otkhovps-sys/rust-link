@@ -158,6 +158,10 @@ enum SourceSpec {
     },
     Progressive(Arc<crate::cache::DownloadProgress>),
     Live(Box<dyn MediaSource>),
+    Remote {
+        reader: crate::source::remote::RangedReader,
+        container: Option<String>,
+    },
 }
 
 impl SourceSpec {
@@ -193,6 +197,7 @@ impl SourceSpec {
                 }
             }
             SourceSpec::Live(source) => TrackDecoder::open(source, None),
+            SourceSpec::Remote { reader, container } => TrackDecoder::open(Box::new(reader), container.as_deref()),
         }
     }
 }
@@ -219,6 +224,10 @@ pub async fn run_track(
     let spec = match acquired.source {
         PlayableSource::File { path, container } => SourceSpec::File { path, container },
         PlayableSource::Progressive { progress } => SourceSpec::Progressive(progress),
+        PlayableSource::Remote { mut reader, container } => {
+            reader.attach_cancel(controls.cancel.clone());
+            SourceSpec::Remote { reader, container }
+        }
         PlayableSource::Stream(stream) => {
             let reader = stream.into_blocking_reader(&tokio::runtime::Handle::current(), controls.cancel.clone());
             SourceSpec::Live(Box::new(ReadOnlySource::new(reader)))

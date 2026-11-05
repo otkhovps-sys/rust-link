@@ -17,7 +17,11 @@ use super::{
     DownloadProgress, PinTable, PlayableSource,
 };
 use crate::{
-    api::models::TrackInfo, audio::decoder, config::CacheConfig, onedrive::OneDriveClient, source::SourceManager,
+    api::models::{TrackInfo, STREAM_LENGTH},
+    audio::decoder,
+    config::CacheConfig,
+    onedrive::OneDriveClient,
+    source::{DirectSource, SourceManager},
 };
 
 #[derive(Debug, Clone)]
@@ -100,14 +104,12 @@ impl CacheManager {
     /// 1. local hit -> serve the file and refresh `last_accessed_at`
     /// 2. evicted but backed up -> pull from OneDrive (cold storage), source as fallback
     /// 3. miss -> download from the original source
+    ///
+    /// Live streams, and tracks longer than `maxTrackDurationSecs` or larger than
+    /// `maxFileSize`, are played straight from the origin and never cached.
     pub async fn acquire(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<AcquiredSource> {
         if info.is_stream || !self.cfg.enabled {
-            let stream = self.sources.open_stream(info).await?;
-            return Ok(AcquiredSource {
-                source: PlayableSource::Stream(stream),
-                lease: None,
-                outcome: CacheOutcome::Bypass,
-            });
+            return self.direct(info).await;
         }
 
         let key = cache_key_for(info);
@@ -120,7 +122,12 @@ impl CacheManager {
         let mut origins = vec![Origin::Source];
         let mut outcome = CacheOutcome::Miss;
 
-        if let Some(entry) = self.index.get(&key).await? {
+        let entry = self.index.get(&key).await?;
+        if entry.is_none() && self.too_large_to_cache(info).await {
+            info!(%key, title = %info.title, "streaming directly without caching (too long or too large)");
+            return self.direct(info).await;
+        }
+        if let Some(entry) = entry {
             let path = self.absolute_path(&entry.file_path);
             if entry.is_local {
                 if tokio::fs::try_exists(&path).await.unwrap_or(false) {
@@ -165,6 +172,31 @@ impl CacheManager {
         let outcome = if joined { CacheOutcome::Joined } else { outcome };
         info!(%key, ?outcome, title = %info.title, "fetching track into cache");
         self.deliver(progress, lease, outcome).await
+    }
+
+    async fn direct(&self, info: &TrackInfo) -> anyhow::Result<AcquiredSource> {
+        let source = match self.sources.open_direct(info).await? {
+            DirectSource::Seekable { reader, container } => PlayableSource::Remote { reader, container },
+            DirectSource::Stream(stream) => PlayableSource::Stream(stream),
+        };
+        Ok(AcquiredSource {
+            source,
+            lease: None,
+            outcome: CacheOutcome::Bypass,
+        })
+    }
+
+    async fn too_large_to_cache(&self, info: &TrackInfo) -> bool {
+        let limit_secs = self.cfg.max_track_duration_secs;
+        if limit_secs > 0 && info.length != STREAM_LENGTH && info.length > limit_secs.saturating_mul(1000) {
+            return true;
+        }
+        if info.length == 0 {
+            if let Some(size) = self.sources.content_length(info).await {
+                return size > self.cfg.max_file_size.as_u64();
+            }
+        }
+        false
     }
 
     fn inflight_get(&self, key: &str) -> Option<Arc<DownloadProgress>> {

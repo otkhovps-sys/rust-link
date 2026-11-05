@@ -1,13 +1,17 @@
 //! Track resolution (`/v4/loadtracks`) and raw audio byte streams for the cache.
 
+pub mod hls;
 pub mod http;
+pub mod mpegts;
+pub mod remote;
 pub mod ytdlp;
 pub mod ytdlp_update;
 
 use std::{
+    collections::HashMap,
     future::Future,
     io::{self, Read},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use bytes::{Buf, Bytes};
@@ -24,8 +28,36 @@ use crate::{
 
 use self::{
     http::HttpSource,
+    remote::{RangedReader, RemoteMedia, UrlRefresher},
     ytdlp::{Resolved, YtDlp},
 };
+
+/// yt-dlp format for live streams: audio-only HLS when offered, else the smallest video.
+const LIVE_FORMAT: &str = "bestaudio/worst";
+
+/// Audio played straight from the origin, never written to the cache.
+pub enum DirectSource {
+    /// Seekable HTTP resource read in Range chunks.
+    Seekable {
+        reader: RangedReader,
+        container: Option<String>,
+    },
+    /// Forward-only stream (HLS, radio, yt-dlp pipe).
+    Stream(ByteStream),
+}
+
+fn header_map(headers: &HashMap<String, String>) -> reqwest::header::HeaderMap {
+    let mut map = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        if let (Ok(name), Ok(value)) = (
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+            reqwest::header::HeaderValue::from_str(value),
+        ) {
+            map.insert(name, value);
+        }
+    }
+    map
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
@@ -376,6 +408,86 @@ impl SourceManager {
                 tracks: tracks.into_iter().map(Track::new).collect(),
             }),
         })
+    }
+
+    /// Page URL handed to yt-dlp for a track.
+    fn page_url(info: &TrackInfo) -> String {
+        if info.source_name == "youtube" && is_youtube_video_id(&info.identifier) {
+            youtube_watch_url(&info.identifier)
+        } else {
+            info.uri.clone().unwrap_or_else(|| info.identifier.clone())
+        }
+    }
+
+    /// Size of a direct HTTP track, when known.
+    pub async fn content_length(&self, info: &TrackInfo) -> Option<u64> {
+        if info.source_name != "http" {
+            return None;
+        }
+        self.http
+            .content_length(info.uri.as_deref().unwrap_or(&info.identifier))
+            .await
+    }
+
+    /// Play without caching: live streams (HLS when available) and tracks too large to
+    /// cache (seekable HTTP ranges). Falls back to piping through yt-dlp.
+    pub async fn open_direct(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<DirectSource> {
+        let client = self.http.client().clone();
+        if info.source_name == "http" {
+            let target = info.uri.clone().unwrap_or_else(|| info.identifier.clone());
+            if !info.is_stream {
+                let media = RemoteMedia {
+                    url: target.clone(),
+                    headers: Default::default(),
+                    refresh: None,
+                };
+                if let Some(reader) = RangedReader::open(client, media).await? {
+                    return Ok(DirectSource::Seekable {
+                        reader,
+                        container: None,
+                    });
+                }
+            }
+            return Ok(DirectSource::Stream(self.http.open(&target).await?));
+        }
+
+        let page = Self::page_url(info);
+        let format = info.is_stream.then_some(LIVE_FORMAT);
+        let media = match self.ytdlp.media_url(&page, format).await {
+            Ok(media) => media,
+            Err(e) => {
+                debug!(error = %e, "no direct media URL, piping through yt-dlp");
+                return Ok(DirectSource::Stream(self.ytdlp.download(&page)?));
+            }
+        };
+        let headers = header_map(&media.headers);
+        if media.is_hls() {
+            let url = Url::parse(&media.url)?;
+            debug!(%page, "playing HLS stream");
+            return Ok(DirectSource::Stream(hls::open(client, url, headers)));
+        }
+        if media.is_plain_http() && !info.is_stream {
+            let this = Arc::clone(self);
+            let refresh_page = page.clone();
+            let refresh: UrlRefresher = Arc::new(move || {
+                let this = Arc::clone(&this);
+                let page = refresh_page.clone();
+                Box::pin(async move { Ok(this.ytdlp.media_url(&page, None).await?.url) })
+            });
+            let remote = RemoteMedia {
+                url: media.url.clone(),
+                headers,
+                refresh: Some(refresh),
+            };
+            if let Some(reader) = RangedReader::open(client, remote).await? {
+                debug!(%page, length = reader.length(), "streaming directly with HTTP ranges");
+                return Ok(DirectSource::Seekable {
+                    reader,
+                    container: media.ext.clone(),
+                });
+            }
+        }
+        Ok(DirectSource::Stream(self.ytdlp.download(&page)?))
     }
 
     /// Raw bytes of the audio file behind a track.

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod media_server;
 pub mod voice_mock;
 
 use std::{net::SocketAddr, path::Path, sync::Arc};

@@ -67,7 +67,8 @@ cache:
   lruIntervalSecs: 60
   evictUnsynced: false           # false: không xóa file chưa backup lên OneDrive
   progressivePlayback: true      # phát ngay trong lúc file còn đang tải
-  maxFileSize: 1GiB
+  maxFileSize: 1GiB              # file lớn hơn (khi biết trước kích thước) sẽ phát thẳng, không lưu cache
+  maxTrackDurationSecs: 7200     # bài dài hơn 2 giờ phát thẳng từ nguồn (vẫn tua được); 0 = không giới hạn
   fileExtension: opus
 
 onedrive:
