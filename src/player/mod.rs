@@ -335,6 +335,7 @@ impl Player {
             guild_id: self.guild_id.to_string(),
             track: track.clone(),
         });
+        self.ctx.cache.on_track_started(&track.info);
 
         let weak = Arc::downgrade(self);
         let stuck_player = Arc::downgrade(self);

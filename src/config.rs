@@ -334,6 +334,8 @@ pub struct CacheConfig {
     pub max_file_size: ByteSize,
     /// Tracks longer than this are streamed from the origin instead of cached (0 = no limit).
     pub max_track_duration_secs: u64,
+    /// Tracks cached ahead after a playlist load and after each playlist track starts (0 = off).
+    pub prefetch_tracks: usize,
     pub file_extension: String,
 }
 
@@ -351,6 +353,7 @@ impl Default for CacheConfig {
             progressive_playback: true,
             max_file_size: ByteSize::gib(1),
             max_track_duration_secs: 7_200,
+            prefetch_tracks: 3,
             file_extension: "opus".into(),
         }
     }

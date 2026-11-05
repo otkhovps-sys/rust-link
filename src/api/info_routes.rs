@@ -59,7 +59,13 @@ pub async fn load_tracks(
     let identifier = query
         .get("identifier")
         .ok_or_else(|| ApiError::bad_request("Missing identifier query parameter"))?;
-    Ok(Json(ctx.sources.load_tracks(identifier).await))
+    let result = ctx.sources.load_tracks(identifier).await;
+    if let LoadResult::Playlist(playlist) = &result {
+        let start = usize::try_from(playlist.info.selected_track).unwrap_or(0);
+        let tracks = playlist.tracks.iter().map(|t| t.info.clone()).collect();
+        ctx.cache.remember_playlist(tracks, start);
+    }
+    Ok(Json(result))
 }
 
 fn decode_one(encoded: &str) -> Result<Track, ApiError> {

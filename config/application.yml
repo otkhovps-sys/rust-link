@@ -77,6 +77,7 @@ sources:
   mirrorProviders:               # thử lần lượt, %ISRC% = mã ISRC, %QUERY% = "tên bài nghệ sĩ"
     - 'ytsearch:"%ISRC%"'
     - 'ytsearch:%QUERY%'
+  loadCacheTtlSecs: 21600        # kết quả tìm kiếm / link nhạc được dùng lại trong 6 giờ; 0 = tắt
 
 cache:
   enabled: true
@@ -90,6 +91,7 @@ cache:
   progressivePlayback: true      # phát ngay trong lúc file còn đang tải
   maxFileSize: 1GiB              # file lớn hơn (khi biết trước kích thước) sẽ phát thẳng, không lưu cache
   maxTrackDurationSecs: 7200     # bài dài hơn 2 giờ phát thẳng từ nguồn (vẫn tua được); 0 = không giới hạn
+  prefetchTracks: 3              # load playlist hoặc phát bài trong playlist -> tải sẵn 3 bài kế tiếp; 0 = tắt
   fileExtension: opus
 
 onedrive:

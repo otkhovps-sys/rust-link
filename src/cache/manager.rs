@@ -1,7 +1,7 @@
 //! Cache lookups, downloads into the cache and OneDrive cold-storage pulls.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -9,7 +9,10 @@ use std::{
 
 use anyhow::{anyhow, bail, Context};
 use sha2::{Digest, Sha256};
-use tokio::{io::AsyncWriteExt, sync::Notify};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Notify, Semaphore},
+};
 use tracing::{debug, info, warn};
 
 use super::{
@@ -42,7 +45,13 @@ pub struct CacheManager {
     pins: Arc<PinTable>,
     lru_notify: Notify,
     sync_notify: Notify,
+    /// Recently loaded playlists, newest last, for rolling prefetch.
+    playlists: Mutex<VecDeque<Arc<Vec<TrackInfo>>>>,
+    prefetch_slots: Arc<Semaphore>,
 }
+
+const REMEMBERED_PLAYLISTS: usize = 32;
+const PREFETCH_CONCURRENCY: usize = 2;
 
 impl CacheManager {
     pub fn new(
@@ -60,6 +69,8 @@ impl CacheManager {
             pins: Arc::new(PinTable::default()),
             lru_notify: Notify::new(),
             sync_notify: Notify::new(),
+            playlists: Mutex::new(VecDeque::new()),
+            prefetch_slots: Arc::new(Semaphore::new(PREFETCH_CONCURRENCY)),
         })
     }
 
@@ -200,6 +211,101 @@ impl CacheManager {
             }
         }
         false
+    }
+
+    /// A playlist was loaded: cache its first tracks (from `start`) ahead of playback and
+    /// remember it for [`Self::on_track_started`].
+    pub fn remember_playlist(self: &Arc<Self>, tracks: Vec<TrackInfo>, start: usize) {
+        if self.cfg.prefetch_tracks == 0 || tracks.is_empty() {
+            return;
+        }
+        let ahead: Vec<TrackInfo> = tracks
+            .iter()
+            .skip(start)
+            .take(self.cfg.prefetch_tracks)
+            .cloned()
+            .collect();
+        {
+            let mut playlists = self.playlists.lock().unwrap();
+            playlists.push_back(Arc::new(tracks));
+            while playlists.len() > REMEMBERED_PLAYLISTS {
+                playlists.pop_front();
+            }
+        }
+        self.prefetch(ahead);
+    }
+
+    /// A track started: if it belongs to a recently loaded playlist, cache the next ones.
+    pub fn on_track_started(self: &Arc<Self>, info: &TrackInfo) {
+        if self.cfg.prefetch_tracks == 0 {
+            return;
+        }
+        let next: Option<Vec<TrackInfo>> = {
+            let playlists = self.playlists.lock().unwrap();
+            playlists.iter().rev().find_map(|tracks| {
+                let index = tracks
+                    .iter()
+                    .position(|t| t.identifier == info.identifier && t.source_name == info.source_name)?;
+                Some(
+                    tracks
+                        .iter()
+                        .skip(index + 1)
+                        .take(self.cfg.prefetch_tracks)
+                        .cloned()
+                        .collect(),
+                )
+            })
+        };
+        if let Some(next) = next {
+            self.prefetch(next);
+        }
+    }
+
+    /// Download tracks into the cache in the background, a few at a time.
+    pub fn prefetch(self: &Arc<Self>, tracks: Vec<TrackInfo>) {
+        if tracks.is_empty() || !self.cfg.enabled {
+            return;
+        }
+        let this = Arc::clone(self);
+        tokio::spawn(async move {
+            for info in tracks {
+                let Ok(permit) = Arc::clone(&this.prefetch_slots).acquire_owned().await else {
+                    return;
+                };
+                let this = Arc::clone(&this);
+                tokio::spawn(async move {
+                    if let Err(e) = this.prefetch_one(&info).await {
+                        debug!(title = %info.title, error = %format!("{e:#}"), "prefetch skipped");
+                    }
+                    drop(permit);
+                });
+            }
+        });
+    }
+
+    async fn prefetch_one(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<()> {
+        if info.is_stream {
+            return Ok(());
+        }
+        let resolved = self.sources.resolve_mirror(info).await?;
+        if resolved.is_stream {
+            return Ok(());
+        }
+        let key = cache_key_for(&resolved);
+        if self.is_inflight(&key) {
+            return Ok(());
+        }
+        match self.index.get(&key).await? {
+            Some(entry) if entry.is_local => return Ok(()),
+            None if self.too_large_to_cache(&resolved).await => return Ok(()),
+            _ => {}
+        }
+        debug!(%key, title = %resolved.title, "prefetching");
+        let acquired = self.acquire(&resolved).await?;
+        if let PlayableSource::Progressive { progress } = &acquired.source {
+            progress.wait_done().await.map_err(|e| anyhow!(e))?;
+        }
+        Ok(())
     }
 
     fn inflight_get(&self, key: &str) -> Option<Arc<DownloadProgress>> {
