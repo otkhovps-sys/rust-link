@@ -1,9 +1,11 @@
 //! Keeps yt-dlp current. YouTube changes often and an outdated yt-dlp breaks every
 //! YouTube track, so the node updates it on a schedule.
 //!
-//! * `sources.ytdlp.path: managed`: rust-link owns a standalone yt-dlp build in
-//!   `sources.ytdlp.managedDir`. It is installed on first start and replaced when the
-//!   official release checksum (`SHA2-256SUMS`) no longer matches the local file.
+//! * `sources.ytdlp.path: managed`: rust-link owns an official yt-dlp build in
+//!   `sources.ytdlp.managedDir`. It uses the one-directory release (`yt-dlp_linux.zip`,
+//!   ...), which starts about twice as fast as the single-file build because it does not
+//!   unpack itself on every run. It is installed on first start and replaced when the
+//!   release checksum (`SHA2-256SUMS`) no longer matches the installed archive.
 //! * any other path: `yt-dlp -U` (works for the standalone builds; pip installs are
 //!   reported with a hint instead).
 
@@ -24,6 +26,10 @@ use crate::config::YtDlpConfig;
 
 pub const MANAGED: &str = "managed";
 const SUMS_FILE: &str = "SHA2-256SUMS";
+/// Extracted one-directory build inside `managedDir`.
+const BUNDLE_DIR: &str = "yt-dlp-bundle";
+/// Checksum of the release archive the bundle came from.
+const MARKER: &str = ".release-sha256";
 const SELF_UPDATE_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +70,7 @@ fn local_file_name() -> &'static str {
 /// Executable to spawn for yt-dlp.
 pub fn program_path(cfg: &YtDlpConfig) -> PathBuf {
     if is_managed(cfg) {
-        cfg.managed_dir.join(local_file_name())
+        cfg.managed_dir.join(BUNDLE_DIR).join(local_file_name())
     } else {
         PathBuf::from(&cfg.path)
     }
@@ -90,19 +96,46 @@ fn musl_host() -> bool {
         .unwrap_or(false)
 }
 
-/// Name of the official standalone build for this platform.
+/// Name of the official one-directory build (zip) for this platform.
 pub fn release_asset() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Some("yt-dlp.exe"),
-        ("windows", "x86") => Some("yt-dlp_x86.exe"),
-        ("windows", "aarch64") => Some("yt-dlp_arm64.exe"),
-        ("macos", _) => Some("yt-dlp_macos"),
-        ("linux", "x86_64") if musl_host() => Some("yt-dlp_musllinux"),
-        ("linux", "x86_64") => Some("yt-dlp_linux"),
-        ("linux", "aarch64") if musl_host() => Some("yt-dlp_musllinux_aarch64"),
-        ("linux", "aarch64") => Some("yt-dlp_linux_aarch64"),
+        ("windows", "x86_64") => Some("yt-dlp_win.zip"),
+        ("windows", "x86") => Some("yt-dlp_win_x86.zip"),
+        ("windows", "aarch64") => Some("yt-dlp_win_arm64.zip"),
+        ("macos", _) => Some("yt-dlp_macos.zip"),
+        ("linux", "x86_64") if musl_host() => Some("yt-dlp_musllinux.zip"),
+        ("linux", "x86_64") => Some("yt-dlp_linux.zip"),
+        ("linux", "aarch64") if musl_host() => Some("yt-dlp_musllinux_aarch64.zip"),
+        ("linux", "aarch64") => Some("yt-dlp_linux_aarch64.zip"),
         _ => None,
     }
+}
+
+/// Unpack the release archive into `dir` and give its executable a stable name.
+fn extract_bundle(archive: &Path, dir: &Path) -> anyhow::Result<()> {
+    let file = std::fs::File::open(archive)?;
+    let mut zip = zip::ZipArchive::new(file).context("invalid yt-dlp archive")?;
+    zip.extract(dir).context("cannot unpack the yt-dlp archive")?;
+    let executable = std::fs::read_dir(dir)?
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("yt-dlp"))
+        })
+        .ok_or_else(|| anyhow!("no yt-dlp executable in the archive"))?;
+    let target = dir.join(local_file_name());
+    if executable != target {
+        std::fs::rename(&executable, &target)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
 }
 
 /// `sha256  name` lines of `SHA2-256SUMS`.
@@ -113,18 +146,6 @@ fn expected_sha256(sums: &str, asset: &str) -> Option<String> {
         let name = parts.next()?.trim_start_matches('*');
         (name == asset && hash.len() == 64).then(|| hash.to_ascii_lowercase())
     })
-}
-
-async fn file_sha256(path: &Path) -> std::io::Result<String> {
-    let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let mut file = std::fs::File::open(path)?;
-        let mut hasher = Sha256::new();
-        std::io::copy(&mut file, &mut hasher)?;
-        Ok(hex::encode(hasher.finalize()))
-    })
-    .await
-    .map_err(std::io::Error::other)?
 }
 
 async fn version_of(program: &Path) -> String {
@@ -147,7 +168,7 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
         .build()?)
 }
 
-/// Install or refresh the managed binary from `cfg.update_url`.
+/// Install or refresh the managed build from `cfg.update_url`.
 async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<UpdateOutcome> {
     let client = http_client()?;
     let base = cfg.update_url.trim_end_matches('/');
@@ -161,9 +182,11 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
         .await?;
     let expected = expected_sha256(&sums, asset).ok_or_else(|| anyhow!("{asset} is missing from {SUMS_FILE}"))?;
 
+    let bundle = cfg.managed_dir.join(BUNDLE_DIR);
     let target = program_path(cfg);
     let existed = tokio::fs::try_exists(&target).await.unwrap_or(false);
-    if existed && file_sha256(&target).await.ok().as_deref() == Some(expected.as_str()) {
+    let installed = tokio::fs::read_to_string(bundle.join(MARKER)).await.unwrap_or_default();
+    if existed && installed.trim() == expected {
         return Ok(UpdateOutcome::UpToDate {
             version: version_of(&target).await,
         });
@@ -172,14 +195,14 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
     tokio::fs::create_dir_all(&cfg.managed_dir)
         .await
         .with_context(|| format!("cannot create {}", cfg.managed_dir.display()))?;
-    let partial = cfg.managed_dir.join(format!("{}.download", local_file_name()));
+    let archive = cfg.managed_dir.join(format!("{asset}.download"));
     let response = client
         .get(format!("{base}/{asset}"))
         .send()
         .await?
         .error_for_status()
         .with_context(|| format!("cannot download {asset}"))?;
-    let mut file = tokio::fs::File::create(&partial).await?;
+    let mut file = tokio::fs::File::create(&archive).await?;
     let mut hasher = Sha256::new();
     let mut body = response.bytes_stream();
     while let Some(chunk) = body.next().await {
@@ -191,19 +214,34 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
     drop(file);
     let actual = hex::encode(hasher.finalize());
     if actual != expected {
-        let _ = tokio::fs::remove_file(&partial).await;
+        let _ = tokio::fs::remove_file(&archive).await;
         bail!("checksum mismatch for {asset}: expected {expected}, got {actual}");
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755)).await?;
+
+    let staging = cfg.managed_dir.join(format!("{BUNDLE_DIR}.new"));
+    let previous = cfg.managed_dir.join(format!("{BUNDLE_DIR}.old"));
+    let _ = tokio::fs::remove_dir_all(&staging).await;
+    let _ = tokio::fs::remove_dir_all(&previous).await;
+    let (archive_path, staging_dir) = (archive.clone(), staging.clone());
+    let unpacked = tokio::task::spawn_blocking(move || extract_bundle(&archive_path, &staging_dir)).await?;
+    let _ = tokio::fs::remove_file(&archive).await;
+    if let Err(e) = unpacked {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+        return Err(e);
     }
-    // A rename keeps running yt-dlp processes on the old file (on Windows it fails while
-    // the old executable is in use; the next scheduled check retries).
-    tokio::fs::rename(&partial, &target)
-        .await
-        .with_context(|| format!("cannot replace {}", target.display()))?;
+    tokio::fs::write(staging.join(MARKER), &expected).await?;
+    // Directory renames keep running yt-dlp processes on the old files (on Windows the
+    // swap fails while the old build is in use; the next scheduled check retries).
+    if tokio::fs::try_exists(&bundle).await.unwrap_or(false) {
+        tokio::fs::rename(&bundle, &previous)
+            .await
+            .with_context(|| format!("cannot replace {}", bundle.display()))?;
+    }
+    tokio::fs::rename(&staging, &bundle).await?;
+    let _ = tokio::fs::remove_dir_all(&previous).await;
+    // Single-file build installed by earlier versions.
+    let _ = tokio::fs::remove_file(cfg.managed_dir.join(local_file_name())).await;
+
     let version = version_of(&target).await;
     Ok(if existed {
         UpdateOutcome::Updated { version }
@@ -318,7 +356,10 @@ mod tests {
         assert_eq!(program_path(&cfg), PathBuf::from("yt-dlp"));
         cfg.path = "Managed".into();
         cfg.managed_dir = PathBuf::from("/data/bin");
-        assert_eq!(program_path(&cfg), PathBuf::from("/data/bin").join(local_file_name()));
+        assert_eq!(
+            program_path(&cfg),
+            PathBuf::from("/data/bin").join(BUNDLE_DIR).join(local_file_name())
+        );
         assert!(cfg!(not(target_os = "linux")) || release_asset().is_some());
     }
 }
