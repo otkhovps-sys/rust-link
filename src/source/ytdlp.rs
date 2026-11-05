@@ -130,10 +130,20 @@ impl YtDlp {
 
     /// `ytsearch` / `scsearch` with the configured result limit.
     pub async fn search(&self, provider: &str, query: &str, flat: bool) -> Result<Vec<TrackInfo>, SourceError> {
+        self.search_n(provider, query, flat, self.cfg.search_limit).await
+    }
+
+    pub async fn search_n(
+        &self,
+        provider: &str,
+        query: &str,
+        flat: bool,
+        limit: usize,
+    ) -> Result<Vec<TrackInfo>, SourceError> {
         if query.is_empty() {
             return Ok(Vec::new());
         }
-        let target = format!("{provider}{}:{query}", self.cfg.search_limit.clamp(1, 50));
+        let target = format!("{provider}{}:{query}", limit.clamp(1, 50));
         let args: &[&str] = if flat { &["--flat-playlist"] } else { &[] };
         let info = self.run_json(args, &target).await?;
         let default_source = if provider == "scsearch" {

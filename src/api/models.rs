@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 
 pub use crate::audio::filters::Filters;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackInfo {
     pub identifier: String,
@@ -37,10 +37,14 @@ pub struct Track {
 
 impl Track {
     pub fn new(info: TrackInfo) -> Self {
+        Self::with_plugin_info(info, Map::new())
+    }
+
+    pub fn with_plugin_info(info: TrackInfo, plugin_info: Map<String, Value>) -> Self {
         Self {
-            encoded: crate::api::track_codec::encode_track(&info),
+            encoded: crate::api::track_codec::encode_track_with_plugin_info(&info, &plugin_info),
             info,
-            plugin_info: Map::new(),
+            plugin_info,
             user_data: Map::new(),
         }
     }

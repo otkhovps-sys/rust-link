@@ -108,6 +108,9 @@ impl CacheManager {
     /// Live streams, and tracks longer than `maxTrackDurationSecs` or larger than
     /// `maxFileSize`, are played straight from the origin and never cached.
     pub async fn acquire(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<AcquiredSource> {
+        // Spotify / Apple Music / Deezer tracks play from their matched YouTube video.
+        let resolved = self.sources.resolve_mirror(info).await?;
+        let info = &resolved;
         if info.is_stream || !self.cfg.enabled {
             return self.direct(info).await;
         }

@@ -7,8 +7,12 @@
 //!  UTF sourceName, <source specific data>, i64 position`.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use serde_json::{Map, Value};
 
 use super::models::TrackInfo;
+
+/// Sources whose tracks LavaSrc encodes with extra fields (`ExtendedAudioTrack`).
+pub const MIRROR_SOURCES: [&str; 3] = ["spotify", "applemusic", "deezer"];
 
 const TRACK_INFO_VERSIONED: u32 = 1;
 const TRACK_INFO_VERSION: u8 = 3;
@@ -26,6 +30,13 @@ pub enum TrackCodecError {
 }
 
 pub fn encode_track(info: &TrackInfo) -> String {
+    encode_track_with_plugin_info(info, &Map::new())
+}
+
+/// Like [`encode_track`]; mirrored tracks also carry LavaSrc's fields (albumName, albumUrl,
+/// artistUrl, artistArtworkUrl, previewUrl, isPreview) taken from `plugin_info`, so a
+/// Lavalink node running LavaSrc can decode them.
+pub fn encode_track_with_plugin_info(info: &TrackInfo, plugin_info: &Map<String, Value>) -> String {
     let mut body = Vec::with_capacity(256);
     body.push(TRACK_INFO_VERSION);
     write_utf(&mut body, &info.title);
@@ -40,6 +51,13 @@ pub fn encode_track(info: &TrackInfo) -> String {
     if matches!(info.source_name.as_str(), "http" | "local") {
         // ProbingAudioSourceManager writes the container probe name.
         write_utf(&mut body, probe_name_for(info));
+    }
+    if MIRROR_SOURCES.contains(&info.source_name.as_str()) {
+        for key in ["albumName", "albumUrl", "artistUrl", "artistArtworkUrl", "previewUrl"] {
+            write_nullable_utf(&mut body, plugin_info.get(key).and_then(Value::as_str));
+        }
+        let is_preview = plugin_info.get("isPreview").and_then(Value::as_bool).unwrap_or(false);
+        body.push(is_preview as u8);
     }
     body.extend_from_slice(&(info.position as i64).to_be_bytes());
 
@@ -230,6 +248,57 @@ mod tests {
 
     /// Example track from the Lavalink v4 documentation (track info version 2).
     const DOCS_TRACK: &str = "QAAAjQIAJVJpY2sgQXN0bGV5IC0gTmV2ZXIgR29ubmEgR2l2ZSBZb3UgVXAADlJpY2tBc3RsZXlWRVZPAAAAAAADPCAAC2RRdzR3OVdnWGNRAAEAK2h0dHBzOi8vd3d3LnlvdXR1YmUuY29tL3dhdGNoP3Y9ZFF3NHc5V2dYY1EAB3lvdXR1YmUAAAAAAAAAAA==";
+
+    #[test]
+    fn mirrored_tracks_carry_lavasrc_fields() {
+        let info = TrackInfo {
+            identifier: "4uLU6hMCjMI75M1A2tKUQC".into(),
+            is_seekable: true,
+            author: "Rick Astley".into(),
+            length: 213_573,
+            is_stream: false,
+            position: 0,
+            title: "Never Gonna Give You Up".into(),
+            uri: Some("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC".into()),
+            artwork_url: Some("https://i.scdn.co/image/ab67616d0000b273".into()),
+            isrc: Some("GBARL9300135".into()),
+            source_name: "spotify".into(),
+        };
+        let plugin: Map<String, Value> = serde_json::from_value(serde_json::json!({
+            "albumName": "Whenever You Need Somebody",
+            "artistUrl": "https://open.spotify.com/artist/0gxyHStUsqpMadRV0Di1Qt",
+            "isPreview": false
+        }))
+        .unwrap();
+        let encoded = encode_track_with_plugin_info(&info, &plugin);
+        assert_eq!(decode_track(&encoded).unwrap(), info);
+
+        // Read the source specific block the way LavaSrc's decodeTrack does.
+        let raw = STANDARD.decode(&encoded).unwrap();
+        let body = &raw[4..];
+        let mut r = Reader::new(body);
+        r.u8().unwrap();
+        for _ in 0..2 {
+            r.utf().unwrap();
+        }
+        r.i64().unwrap();
+        r.utf().unwrap();
+        r.bool().unwrap();
+        for _ in 0..3 {
+            r.nullable_utf().unwrap();
+        }
+        assert_eq!(r.utf().unwrap(), "spotify");
+        assert_eq!(r.nullable_utf().unwrap().as_deref(), Some("Whenever You Need Somebody"));
+        assert_eq!(r.nullable_utf().unwrap(), None, "albumUrl");
+        assert_eq!(
+            r.nullable_utf().unwrap().as_deref(),
+            Some("https://open.spotify.com/artist/0gxyHStUsqpMadRV0Di1Qt")
+        );
+        assert_eq!(r.nullable_utf().unwrap(), None, "artistArtworkUrl");
+        assert_eq!(r.nullable_utf().unwrap(), None, "previewUrl");
+        assert!(!r.bool().unwrap(), "isPreview");
+        assert_eq!(r.i64().unwrap(), 0, "position follows");
+    }
 
     #[test]
     fn decodes_lavalink_docs_track() {

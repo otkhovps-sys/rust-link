@@ -2,6 +2,7 @@
 
 pub mod hls;
 pub mod http;
+pub mod mirror;
 pub mod mpegts;
 pub mod remote;
 pub mod ytdlp;
@@ -17,17 +18,21 @@ use std::{
 use bytes::{Buf, Bytes};
 use futures_util::{future::BoxFuture, stream::BoxStream, StreamExt};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::{
-    api::models::{LoadResult, PlaylistData, PlaylistInfo, Severity, Track, TrackInfo},
+    api::{
+        models::{LoadResult, PlaylistData, PlaylistInfo, Severity, Track, TrackInfo},
+        track_codec::MIRROR_SOURCES,
+    },
     cache::CacheIndex,
     config::SourcesConfig,
 };
 
 use self::{
     http::HttpSource,
+    mirror::{applemusic::AppleMusicClient, deezer::DeezerClient, spotify::SpotifyClient},
     remote::{RangedReader, RemoteMedia, UrlRefresher},
     ytdlp::{Resolved, YtDlp},
 };
@@ -232,16 +237,40 @@ pub struct SourceManager {
     ytdlp: YtDlp,
     http: HttpSource,
     index: Option<CacheIndex>,
+    spotify: Option<SpotifyClient>,
+    apple_music: Option<AppleMusicClient>,
+    deezer: Option<DeezerClient>,
 }
 
 impl SourceManager {
     pub fn new(cfg: &SourcesConfig, index: Option<CacheIndex>) -> anyhow::Result<Self> {
+        let api = mirror::http_client(cfg.http_timeout_secs)?;
         Ok(Self {
             ytdlp: YtDlp::new(cfg.ytdlp.clone()),
             http: HttpSource::new(cfg.http_timeout_secs)?,
+            spotify: cfg
+                .spotify
+                .enabled
+                .then(|| SpotifyClient::new(cfg.spotify.clone(), api.clone())),
+            apple_music: cfg
+                .apple_music
+                .enabled
+                .then(|| AppleMusicClient::new(cfg.apple_music.clone(), api.clone())),
+            deezer: cfg.deezer.enabled.then(|| DeezerClient::new(cfg.deezer.clone(), api)),
             cfg: cfg.clone(),
             index,
         })
+    }
+
+    fn spotify(&self) -> Result<Option<&SpotifyClient>, SourceError> {
+        match &self.spotify {
+            Some(client) if client.is_configured() => Ok(Some(client)),
+            Some(_) => Err(SourceError::Unavailable(
+                "Spotify needs sources.spotify.clientId and clientSecret (https://developer.spotify.com/dashboard)"
+                    .into(),
+            )),
+            None => Ok(None),
+        }
     }
 
     pub fn source_names(&self) -> Vec<String> {
@@ -257,6 +286,15 @@ impl SourceManager {
         }
         if self.cfg.ytdlp_generic {
             names.push("ytdlp".to_string());
+        }
+        if self.spotify.as_ref().is_some_and(SpotifyClient::is_configured) {
+            names.push("spotify".to_string());
+        }
+        if self.apple_music.as_ref().is_some_and(AppleMusicClient::is_configured) {
+            names.push("applemusic".to_string());
+        }
+        if self.deezer.is_some() {
+            names.push("deezer".to_string());
         }
         if self.index.is_some() {
             names.push("cache".to_string());
@@ -310,6 +348,36 @@ impl SourceManager {
             }
             return Ok(search_result(self.ytdlp.search("scsearch", q.trim(), false).await?));
         }
+        if let Some(q) = strip_prefix_ci(id, "spsearch:") {
+            return match self.spotify()? {
+                Some(spotify) => spotify.search(q.trim()).await,
+                None => Ok(LoadResult::empty()),
+            };
+        }
+        if let Some(q) = strip_prefix_ci(id, "amsearch:") {
+            return match &self.apple_music {
+                Some(apple) => apple.search(q.trim()).await,
+                None => Ok(LoadResult::empty()),
+            };
+        }
+        if let Some(q) = strip_prefix_ci(id, "dzsearch:") {
+            return match &self.deezer {
+                Some(deezer) => deezer.search(q.trim()).await,
+                None => Ok(LoadResult::empty()),
+            };
+        }
+        if let Some(isrc) = strip_prefix_ci(id, "dzisrc:") {
+            return match &self.deezer {
+                Some(deezer) => deezer.by_isrc(isrc).await,
+                None => Ok(LoadResult::empty()),
+            };
+        }
+        if let Some(reference) = mirror::spotify::parse_ref(id) {
+            return match self.spotify()? {
+                Some(spotify) => spotify.load(reference).await,
+                None => Ok(LoadResult::empty()),
+            };
+        }
         if let Some(q) = strip_prefix_ci(id, "cachesearch:") {
             let Some(index) = &self.index else {
                 return Ok(LoadResult::empty());
@@ -330,6 +398,26 @@ impl SourceManager {
                     self.load_youtube_url(&url).await
                 } else {
                     Ok(LoadResult::empty())
+                };
+            }
+            if let Some(reference) = mirror::applemusic::parse_ref(&url) {
+                return match &self.apple_music {
+                    Some(apple) => apple.load(reference).await,
+                    None => Ok(LoadResult::empty()),
+                };
+            }
+            if mirror::deezer::is_deezer_host(&url) {
+                let Some(deezer) = &self.deezer else {
+                    return Ok(LoadResult::empty());
+                };
+                let reference = if mirror::deezer::is_short_link(&url) {
+                    deezer.expand(&url).await?
+                } else {
+                    mirror::deezer::parse_ref(&url)
+                };
+                return match reference {
+                    Some(reference) => deezer.load(reference).await,
+                    None => Ok(LoadResult::empty()),
                 };
             }
             if is_soundcloud_host(&url) {
@@ -408,6 +496,77 @@ impl SourceManager {
                 tracks: tracks.into_iter().map(Track::new).collect(),
             }),
         })
+    }
+
+    /// Playable stand-in for a Spotify / Apple Music / Deezer track: the YouTube video
+    /// matched by ISRC or title and artist (remembered in the cache index). Other tracks
+    /// are returned unchanged.
+    pub async fn resolve_mirror(&self, info: &TrackInfo) -> anyhow::Result<TrackInfo> {
+        if !MIRROR_SOURCES.contains(&info.source_name.as_str()) {
+            return Ok(info.clone());
+        }
+        let mut lookup = info.clone();
+        if lookup.isrc.is_none() && info.source_name == "deezer" {
+            if let Some(deezer) = &self.deezer {
+                lookup.isrc = deezer.isrc_of(&info.identifier).await.ok().flatten();
+            }
+        }
+        if let Some(index) = &self.index {
+            let mut known = index.get_mirror(&info.source_name, &info.identifier).await?;
+            if known.is_none() {
+                if let Some(isrc) = &lookup.isrc {
+                    known = index.get_mirror("isrc", isrc).await?;
+                }
+            }
+            if let Some((video_id, length)) = known {
+                debug!(source = %info.source_name, id = %info.identifier, %video_id, "mirror known");
+                return Ok(mirrored(info, &video_id, length.max(0) as u64));
+            }
+        }
+
+        let mut chosen = None;
+        let mut fallback = None;
+        for (provider, query) in mirror::provider_queries(&self.cfg.mirror_providers, &lookup) {
+            let results = match self.ytdlp.search_n(&provider, &query, true, 5).await {
+                Ok(results) => results,
+                Err(e) => {
+                    debug!(%provider, %query, error = %e, "mirror search failed");
+                    continue;
+                }
+            };
+            if let Some(i) = mirror::pick_candidate(&results, info.length) {
+                chosen = Some(results[i].clone());
+                break;
+            }
+            if fallback.is_none() {
+                fallback = results.into_iter().find(|c| !c.is_stream);
+            }
+        }
+        let candidate = chosen
+            .or(fallback)
+            .ok_or_else(|| anyhow::anyhow!("no playable match found for {} - {}", info.title, info.author))?;
+        info!(
+            source = %info.source_name,
+            title = %info.title,
+            matched = %candidate.identifier,
+            "mirrored track resolved"
+        );
+        if candidate.source_name != "youtube" {
+            let mut resolved = candidate;
+            resolved.title = info.title.clone();
+            resolved.author = info.author.clone();
+            return Ok(resolved);
+        }
+        if let Some(index) = &self.index {
+            let length = candidate.length as i64;
+            index
+                .put_mirror(&info.source_name, &info.identifier, &candidate.identifier, length)
+                .await?;
+            if let Some(isrc) = &lookup.isrc {
+                index.put_mirror("isrc", isrc, &candidate.identifier, length).await?;
+            }
+        }
+        Ok(mirrored(info, &candidate.identifier, candidate.length))
     }
 
     /// Page URL handed to yt-dlp for a track.
@@ -505,6 +664,23 @@ impl SourceManager {
             }
             _ => Ok(self.ytdlp.download(&target)?),
         }
+    }
+}
+
+/// The original track's metadata on the matched YouTube video.
+fn mirrored(original: &TrackInfo, video_id: &str, length: u64) -> TrackInfo {
+    TrackInfo {
+        identifier: video_id.to_string(),
+        is_seekable: true,
+        author: original.author.clone(),
+        length: if length > 0 { length } else { original.length },
+        is_stream: false,
+        position: original.position,
+        title: original.title.clone(),
+        uri: Some(youtube_watch_url(video_id)),
+        artwork_url: original.artwork_url.clone(),
+        isrc: original.isrc.clone(),
+        source_name: "youtube".into(),
     }
 }
 

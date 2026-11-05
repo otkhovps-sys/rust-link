@@ -166,6 +166,13 @@ pub struct SourcesConfig {
     pub ytdlp_generic: bool,
     pub http_timeout_secs: u64,
     pub ytdlp: YtDlpConfig,
+    pub spotify: SpotifyConfig,
+    pub apple_music: AppleMusicConfig,
+    pub deezer: DeezerConfig,
+    /// Searches tried in order to find a playable YouTube copy of a Spotify, Apple Music or
+    /// Deezer track (LavaSrc `providers`). `%ISRC%` and `%QUERY%` (title + artist) are
+    /// substituted; templates with `%ISRC%` are skipped for tracks without one.
+    pub mirror_providers: Vec<String>,
 }
 
 impl Default for SourcesConfig {
@@ -177,6 +184,95 @@ impl Default for SourcesConfig {
             ytdlp_generic: true,
             http_timeout_secs: 20,
             ytdlp: YtDlpConfig::default(),
+            spotify: SpotifyConfig::default(),
+            apple_music: AppleMusicConfig::default(),
+            deezer: DeezerConfig::default(),
+            mirror_providers: vec!["ytsearch:\"%ISRC%\"".into(), "ytsearch:%QUERY%".into()],
+        }
+    }
+}
+
+/// Spotify Web API (client credentials from https://developer.spotify.com/dashboard).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SpotifyConfig {
+    pub enabled: bool,
+    pub client_id: String,
+    pub client_secret: String,
+    pub country_code: String,
+    /// Pages of 100 tracks loaded from a playlist.
+    pub playlist_load_limit: usize,
+    /// Pages of 50 tracks loaded from an album.
+    pub album_load_limit: usize,
+    pub search_limit: usize,
+    pub api_url: String,
+    pub accounts_url: String,
+}
+
+impl Default for SpotifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            client_id: String::new(),
+            client_secret: String::new(),
+            country_code: "US".into(),
+            playlist_load_limit: 6,
+            album_load_limit: 6,
+            search_limit: 10,
+            api_url: "https://api.spotify.com/v1".into(),
+            accounts_url: "https://accounts.spotify.com".into(),
+        }
+    }
+}
+
+/// Apple Music catalog API, with a MusicKit developer token from an Apple Developer account.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppleMusicConfig {
+    pub enabled: bool,
+    pub country_code: String,
+    #[serde(alias = "mediaAPIToken")]
+    pub media_api_token: String,
+    /// Pages of 100 tracks loaded from a playlist.
+    pub playlist_load_limit: usize,
+    /// Pages of 100 tracks loaded from an album.
+    pub album_load_limit: usize,
+    pub search_limit: usize,
+    pub api_url: String,
+}
+
+impl Default for AppleMusicConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            country_code: "us".into(),
+            media_api_token: String::new(),
+            playlist_load_limit: 6,
+            album_load_limit: 6,
+            search_limit: 10,
+            api_url: "https://api.music.apple.com".into(),
+        }
+    }
+}
+
+/// Deezer public API (no account needed for metadata).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DeezerConfig {
+    pub enabled: bool,
+    /// Pages of 100 tracks loaded from a playlist.
+    pub playlist_load_limit: usize,
+    pub search_limit: usize,
+    pub api_url: String,
+}
+
+impl Default for DeezerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            playlist_load_limit: 6,
+            search_limit: 10,
+            api_url: "https://api.deezer.com".into(),
         }
     }
 }
@@ -464,6 +560,72 @@ impl AppConfig {
                 self.sources.http = enabled;
             }
         }
+        self.apply_lavasrc_compat(root);
+    }
+
+    /// LavaSrc settings (`plugins.lavasrc`) of a Lavalink application.yml.
+    fn apply_lavasrc_compat(&mut self, root: &serde_norway::Value) {
+        let has = |path: &[&str]| yaml_path(root, path).is_some();
+        let lavasrc = |path: &[&str]| {
+            let mut full = vec!["plugins", "lavasrc"];
+            full.extend_from_slice(path);
+            yaml_path(root, &full).cloned()
+        };
+        let text = |path: &[&str]| lavasrc(path).and_then(|v| v.as_str().map(str::to_string));
+        let number = |path: &[&str]| lavasrc(path).and_then(|v| v.as_u64()).map(|v| v as usize);
+        let flag = |path: &[&str]| lavasrc(path).and_then(|v| v.as_bool());
+
+        if !has(&["sources", "mirrorProviders"]) {
+            if let Some(providers) =
+                lavasrc(&["providers"]).and_then(|v| serde_norway::from_value::<Vec<String>>(v).ok())
+            {
+                self.sources.mirror_providers = providers;
+            }
+        }
+        if !has(&["sources", "spotify"]) {
+            let spotify = &mut self.sources.spotify;
+            if let Some(v) = flag(&["sources", "spotify"]) {
+                spotify.enabled = v;
+            }
+            if let Some(v) = text(&["spotify", "clientId"]) {
+                spotify.client_id = v;
+            }
+            if let Some(v) = text(&["spotify", "clientSecret"]) {
+                spotify.client_secret = v;
+            }
+            if let Some(v) = text(&["spotify", "countryCode"]) {
+                spotify.country_code = v;
+            }
+            if let Some(v) = number(&["spotify", "playlistLoadLimit"]) {
+                spotify.playlist_load_limit = v;
+            }
+            if let Some(v) = number(&["spotify", "albumLoadLimit"]) {
+                spotify.album_load_limit = v;
+            }
+        }
+        if !has(&["sources", "appleMusic"]) {
+            let apple = &mut self.sources.apple_music;
+            if let Some(v) = flag(&["sources", "applemusic"]) {
+                apple.enabled = v;
+            }
+            if let Some(v) = text(&["applemusic", "countryCode"]) {
+                apple.country_code = v;
+            }
+            if let Some(v) = text(&["applemusic", "mediaAPIToken"]).filter(|t| !t.contains("your apple music")) {
+                apple.media_api_token = v;
+            }
+            if let Some(v) = number(&["applemusic", "playlistLoadLimit"]) {
+                apple.playlist_load_limit = v;
+            }
+            if let Some(v) = number(&["applemusic", "albumLoadLimit"]) {
+                apple.album_load_limit = v;
+            }
+        }
+        if !has(&["sources", "deezer"]) {
+            if let Some(v) = flag(&["sources", "deezer"]) {
+                self.sources.deezer.enabled = v;
+            }
+        }
     }
 
     fn apply_env(&mut self) {
@@ -647,6 +809,22 @@ plugins:
     enabled: true
     allowSearch: true
     clients: ["MUSIC", "ANDROID_VR", "WEB", "WEBEMBEDDED"]
+  lavasrc:
+    providers:
+      - "ytsearch:\"%ISRC%\""
+      - "ytsearch:%QUERY%"
+    sources:
+      spotify: true
+      applemusic: false
+      deezer: true
+    spotify:
+      clientId: "spotify-id"
+      clientSecret: "spotify-secret"
+      countryCode: "VN"
+      playlistLoadLimit: 3
+    applemusic:
+      countryCode: "US"
+      mediaAPIToken: "your apple music api token"
 lavalink:
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.0"
@@ -711,6 +889,19 @@ logging:
         assert_eq!(cfg.audio.opus_complexity, 8);
         assert_eq!(cfg.audio.frame_buffer_ms, 400);
         assert!(!cfg.lavalink.filters.karaoke);
+        assert_eq!(cfg.sources.spotify.client_id, "spotify-id");
+        assert_eq!(cfg.sources.spotify.country_code, "VN");
+        assert_eq!(cfg.sources.spotify.playlist_load_limit, 3);
+        assert_eq!(cfg.sources.spotify.album_load_limit, 6);
+        assert!(!cfg.sources.apple_music.enabled);
+        assert!(
+            cfg.sources.apple_music.media_api_token.is_empty(),
+            "placeholder token ignored"
+        );
+        assert_eq!(
+            cfg.sources.mirror_providers,
+            vec!["ytsearch:\"%ISRC%\"", "ytsearch:%QUERY%"]
+        );
         assert!(
             cfg.lavalink.filters.timescale,
             "filters missing from the list stay enabled"

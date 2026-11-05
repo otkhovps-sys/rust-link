@@ -372,6 +372,31 @@ impl CacheIndex {
         Ok(())
     }
 
+    /// YouTube video previously matched to a mirrored track: `(video_id, length_ms)`.
+    pub async fn get_mirror(&self, source: &str, identifier: &str) -> sqlx::Result<Option<(String, i64)>> {
+        sqlx::query_as("SELECT video_id, length_ms FROM mirror_map WHERE source = ? AND identifier = ?")
+            .bind(source)
+            .bind(identifier)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    pub async fn put_mirror(&self, source: &str, identifier: &str, video_id: &str, length_ms: i64) -> sqlx::Result<()> {
+        sqlx::query(
+            "INSERT INTO mirror_map (source, identifier, video_id, length_ms, resolved_at) VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(source, identifier) DO UPDATE SET video_id = excluded.video_id, \
+             length_ms = excluded.length_ms, resolved_at = excluded.resolved_at",
+        )
+        .bind(source)
+        .bind(identifier)
+        .bind(video_id)
+        .bind(length_ms)
+        .bind(crate::util::now_millis())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn state_get(&self, key: &str) -> sqlx::Result<Option<String>> {
         sqlx::query_scalar("SELECT value FROM node_state WHERE key = ?")
             .bind(key)

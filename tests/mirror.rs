@@ -1,0 +1,413 @@
+//! Spotify / Apple Music / Deezer links against mock APIs, and playback through the
+//! matched YouTube video (fake yt-dlp).
+#![cfg(unix)]
+
+mod common;
+
+use std::{
+    path::Path,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
+use axum::{
+    extract::{Path as UrlPath, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use base64::Engine;
+use common::{
+    voice_mock::{lavalink_ws, start_voice_server, wait_event},
+    write_wav, TestNode,
+};
+use rust_link::audio::crypto::EncryptionMode;
+use serde_json::{json, Value};
+
+#[derive(Clone, Default)]
+struct Counters {
+    spotify_tokens: Arc<AtomicUsize>,
+    base: Arc<std::sync::Mutex<String>>,
+}
+
+const APPLE_TOKEN: &str = "apple-developer-token";
+
+fn spotify_track(id: &str, name: &str, isrc: &str, duration: u64) -> Value {
+    json!({"id": id, "type": "track", "name": name, "duration_ms": duration,
+        "external_ids": {"isrc": isrc},
+        "artists": [{"name": "Test Artist", "external_urls": {"spotify": "https://open.spotify.com/artist/ar1"}}],
+        "album": {"name": "Test Album", "images": [{"url": "https://i.scdn.co/album.jpg"}],
+                  "external_urls": {"spotify": "https://open.spotify.com/album/al1"}},
+        "external_urls": {"spotify": format!("https://open.spotify.com/track/{id}")}})
+}
+
+fn authorized(headers: &HeaderMap, expected: &str) -> bool {
+    headers.get("authorization").and_then(|v| v.to_str().ok()) == Some(expected)
+}
+
+async fn start_mock_apis(counters: Counters) -> String {
+    let app = Router::new()
+        // Spotify
+        .route(
+            "/spotify/accounts/api/token",
+            post(|State(c): State<Counters>, headers: HeaderMap| async move {
+                c.spotify_tokens.fetch_add(1, Ordering::SeqCst);
+                let basic = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("sp-id:sp-secret"));
+                if !authorized(&headers, &basic) {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(json!({"access_token": "sp-token", "token_type": "Bearer", "expires_in": 3600})).into_response()
+            }),
+        )
+        .route(
+            "/spotify/api/tracks/{id}",
+            get(|UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
+                if !authorized(&headers, "Bearer sp-token") {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(spotify_track(&id, "Mirror Song", "USTEST000001", 2_000)).into_response()
+            }),
+        )
+        .route(
+            "/spotify/api/playlists/{id}",
+            get(|State(c): State<Counters>, UrlPath(id): UrlPath<String>| async move {
+                let base = c.base.lock().unwrap().clone();
+                Json(json!({"name": "Road Trip", "external_urls": {"spotify": "https://open.spotify.com/playlist/pl"},
+                    "images": [{"url": "https://i.scdn.co/pl.jpg"}], "owner": {"display_name": "dj"},
+                    "tracks": {"total": 3, "items": [
+                        {"track": spotify_track("t1", "One", "ISRC1", 1000)},
+                        {"track": {"id": null, "is_local": true, "type": "track", "name": "Local file"}}
+                    ], "next": format!("{base}/spotify/api/playlists/{id}/tracks?offset=2")}}))
+            }),
+        )
+        .route(
+            "/spotify/api/playlists/{id}/tracks",
+            get(|| async {
+                Json(json!({"items": [{"track": spotify_track("t2", "Two", "ISRC2", 1000)}], "next": null}))
+            }),
+        )
+        .route(
+            "/spotify/api/albums/{id}",
+            get(|| async {
+                Json(json!({"name": "Discovery", "images": [{"url": "https://i.scdn.co/disc.jpg"}],
+                    "artists": [{"name": "Daft Punk"}], "external_urls": {"spotify": "https://open.spotify.com/album/d"},
+                    "tracks": {"total": 1, "next": null, "items": [
+                        {"id": "s1", "type": "track", "name": "One More Time", "duration_ms": 320000,
+                         "artists": [{"name": "Daft Punk"}]}]}}))
+            }),
+        )
+        .route(
+            "/spotify/api/search",
+            get(|| async {
+                Json(json!({"tracks": {"items": [spotify_track("q1", "Hit", "ISRCQ1", 1000),
+                                                  spotify_track("q2", "Hit (Remix)", "ISRCQ2", 1000)]}}))
+            }),
+        )
+        // Apple Music
+        .route(
+            "/apple/api/v1/catalog/{sf}/songs/{id}",
+            get(|UrlPath((sf, id)): UrlPath<(String, String)>, headers: HeaderMap| async move {
+                if !authorized(&headers, &format!("Bearer {APPLE_TOKEN}")) {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(json!({"data": [{"id": id, "type": "songs", "attributes": {
+                    "name": format!("Song in {sf}"), "artistName": "Adele", "albumName": "25",
+                    "durationInMillis": 295502, "isrc": "GBBKS1500214",
+                    "url": "https://music.apple.com/vn/album/hello/1?i=2",
+                    "artwork": {"url": "https://is1-ssl.mzstatic.com/{w}x{h}bb.jpg"}}}]}))
+                .into_response()
+            }),
+        )
+        .route(
+            "/apple/api/v1/catalog/{sf}/playlists/{id}",
+            get(|UrlPath((_, id)): UrlPath<(String, String)>| async move {
+                Json(json!({"data": [{"id": id, "type": "playlists",
+                    "attributes": {"name": "Today's Hits", "curatorName": "Apple Music", "url": "https://music.apple.com/us/playlist/x/pl.1"},
+                    "relationships": {"tracks": {
+                        "data": [{"id": "1", "type": "songs", "attributes": {"name": "A", "artistName": "X", "durationInMillis": 1000}}],
+                        "next": format!("/v1/catalog/us/playlists/{id}/tracks?offset=1")}}}]}))
+            }),
+        )
+        .route(
+            "/apple/api/v1/catalog/{sf}/playlists/{id}/tracks",
+            get(|| async {
+                Json(json!({"data": [{"id": "2", "type": "songs", "attributes": {"name": "B", "artistName": "Y", "durationInMillis": 1000}},
+                                     {"id": "v", "type": "music-videos", "attributes": {"name": "Video"}}]}))
+            }),
+        )
+        // Deezer
+        .route(
+            "/deezer/track/{id}",
+            get(|UrlPath(id): UrlPath<String>| async move {
+                let (id, isrc) = match id.strip_prefix("isrc:") {
+                    Some(isrc) => ("999".to_string(), isrc.to_string()),
+                    None => (id, "GBDUW0000059".to_string()),
+                };
+                Json(json!({"id": id.parse::<u64>().unwrap(), "type": "track", "title": "Harder", "duration": 224,
+                    "isrc": isrc, "link": format!("https://www.deezer.com/track/{id}"),
+                    "artist": {"name": "Daft Punk"}, "album": {"id": 302127, "title": "Discovery"}}))
+            }),
+        )
+        .route(
+            "/deezer/playlist/{id}",
+            get(|| async { Json(json!({"title": "Deezer Mix", "nb_tracks": 2, "creator": {"name": "me"}})) }),
+        )
+        .route(
+            "/deezer/playlist/{id}/tracks",
+            get(|| async {
+                Json(json!({"data": [
+                    {"id": 1, "type": "track", "title": "First", "duration": 100, "artist": {"name": "A"}},
+                    {"id": 2, "type": "track", "title": "Second", "duration": 100, "artist": {"name": "B"}}]}))
+            }),
+        )
+        .route(
+            "/deezer/search",
+            get(|| async {
+                Json(json!({"data": [{"id": 5, "type": "track", "title": "Found", "duration": 10, "artist": {"name": "C"}}]}))
+            }),
+        )
+        .with_state(counters.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    *counters.base.lock().unwrap() = base.clone();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    base
+}
+
+/// yt-dlp stand-in: searches return a wrong (10 h) and a right (2 s) candidate; downloads
+/// print a 2 s WAV file. Every invocation is appended to `log`.
+fn fake_ytdlp(dir: &Path) -> (String, std::path::PathBuf) {
+    let wav = dir.join("tone.wav");
+    write_wav(&wav, 48_000, 2, 2.0);
+    let log = dir.join("ytdlp.log");
+    let script = dir.join("yt-dlp");
+    let search = r#"{"_type":"playlist","entries":[{"_type":"url","ie_key":"Youtube","id":"aaaaaaaaaaa","title":"10 hour loop","duration":36000.0,"channel":"x"},{"_type":"url","ie_key":"Youtube","id":"bbbbbbbbbbb","title":"Official audio","duration":2.0,"channel":"y"}]}"#;
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  *--dump-single-json*) echo '{search}' ;;\n  *) cat '{}' ;;\nesac\n",
+            log.display(),
+            wav.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (script.display().to_string(), log)
+}
+
+async fn mirror_node(base: &str, ytdlp: &str) -> TestNode {
+    let base = base.to_string();
+    let ytdlp = ytdlp.to_string();
+    TestNode::start(move |c| {
+        c.sources.ytdlp.path = ytdlp;
+        c.sources.spotify.client_id = "sp-id".into();
+        c.sources.spotify.client_secret = "sp-secret".into();
+        c.sources.spotify.api_url = format!("{base}/spotify/api");
+        c.sources.spotify.accounts_url = format!("{base}/spotify/accounts");
+        c.sources.apple_music.api_url = format!("{base}/apple/api");
+        c.sources.apple_music.media_api_token = APPLE_TOKEN.into();
+        c.sources.deezer.api_url = format!("{base}/deezer");
+    })
+    .await
+}
+
+async fn load(node: &TestNode, identifier: &str) -> Value {
+    node.get("/v4/loadtracks")
+        .query(&[("identifier", identifier)])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn loads_spotify_apple_music_and_deezer_links() {
+    let counters = Counters::default();
+    let base = start_mock_apis(counters.clone()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (ytdlp, _) = fake_ytdlp(dir.path());
+    let node = mirror_node(&base, &ytdlp).await;
+
+    let info: Value = node.get("/v4/info").send().await.unwrap().json().await.unwrap();
+    for name in ["spotify", "applemusic", "deezer"] {
+        assert!(
+            info["sourceManagers"].as_array().unwrap().contains(&json!(name)),
+            "{name}"
+        );
+    }
+
+    // Spotify track: metadata, LavaSrc pluginInfo, decodable encoding.
+    let track = load(
+        &node,
+        "https://open.spotify.com/intl-vi/track/4uLU6hMCjMI75M1A2tKUQC?si=x",
+    )
+    .await;
+    assert_eq!(track["loadType"], "track", "{track}");
+    let data = &track["data"];
+    assert_eq!(data["info"]["sourceName"], "spotify");
+    assert_eq!(data["info"]["isrc"], "USTEST000001");
+    assert_eq!(data["info"]["author"], "Test Artist");
+    assert_eq!(data["pluginInfo"]["albumName"], "Test Album");
+    assert_eq!(data["pluginInfo"]["isPreview"], false);
+    let decoded: Value = node
+        .get("/v4/decodetrack")
+        .query(&[("encodedTrack", data["encoded"].as_str().unwrap())])
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(decoded["info"], data["info"]);
+
+    // Playlist pages are followed; local files are skipped.
+    let playlist = load(&node, "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M").await;
+    assert_eq!(playlist["loadType"], "playlist", "{playlist}");
+    assert_eq!(playlist["data"]["info"]["name"], "Road Trip");
+    assert_eq!(playlist["data"]["pluginInfo"]["type"], "playlist");
+    assert_eq!(playlist["data"]["pluginInfo"]["author"], "dj");
+    let titles: Vec<&str> = playlist["data"]["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["info"]["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["One", "Two"]);
+
+    // Simplified album tracks take the album artwork.
+    let album = load(&node, "https://open.spotify.com/album/6N9PS4QXF1D0OWPk0Sxtb4").await;
+    assert_eq!(
+        album["data"]["tracks"][0]["info"]["artworkUrl"],
+        "https://i.scdn.co/disc.jpg"
+    );
+    assert_eq!(album["data"]["pluginInfo"]["author"], "Daft Punk");
+
+    let search = load(&node, "spsearch:hit").await;
+    assert_eq!(search["loadType"], "search");
+    assert_eq!(search["data"].as_array().unwrap().len(), 2);
+    assert_eq!(counters.spotify_tokens.load(Ordering::SeqCst), 1, "token reused");
+
+    // Apple Music: song selected through ?i=, developer token sent as bearer.
+    let song = load(&node, "https://music.apple.com/vn/album/hello/1544494392?i=1544494393").await;
+    assert_eq!(song["loadType"], "track", "{song}");
+    assert_eq!(song["data"]["info"]["title"], "Song in vn");
+    assert_eq!(song["data"]["info"]["sourceName"], "applemusic");
+    assert_eq!(
+        song["data"]["info"]["artworkUrl"],
+        "https://is1-ssl.mzstatic.com/600x600bb.jpg"
+    );
+    let apple_playlist = load(
+        &node,
+        "https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb",
+    )
+    .await;
+    assert_eq!(apple_playlist["data"]["pluginInfo"]["author"], "Apple Music");
+    assert_eq!(
+        apple_playlist["data"]["tracks"].as_array().unwrap().len(),
+        2,
+        "music videos skipped"
+    );
+
+    // Deezer.
+    let deezer = load(&node, "https://www.deezer.com/fr/track/3135556").await;
+    assert_eq!(deezer["data"]["info"]["identifier"], "3135556");
+    assert_eq!(deezer["data"]["info"]["length"], 224_000);
+    assert_eq!(
+        deezer["data"]["pluginInfo"]["albumUrl"],
+        "https://www.deezer.com/album/302127"
+    );
+    let mix = load(&node, "https://www.deezer.com/playlist/908622995").await;
+    assert_eq!(mix["data"]["tracks"].as_array().unwrap().len(), 2);
+    assert_eq!(load(&node, "dzsearch:found").await["data"][0]["info"]["title"], "Found");
+    assert_eq!(
+        load(&node, "dzisrc:USUM71703861").await["data"]["info"]["isrc"],
+        "USUM71703861"
+    );
+
+    // Without credentials the error says what is missing.
+    let unconfigured = TestNode::start(|_| {}).await;
+    let error = load(&unconfigured, "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC").await;
+    assert_eq!(error["loadType"], "error");
+    assert!(
+        error["data"]["message"].as_str().unwrap().contains("clientId"),
+        "{error}"
+    );
+    let error = load(
+        &unconfigured,
+        "https://music.apple.com/us/album/hello/1544494392?i=1544494393",
+    )
+    .await;
+    assert_eq!(error["loadType"], "error");
+    assert!(
+        error["data"]["message"].as_str().unwrap().contains("mediaApiToken"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn plays_mirrored_track_through_matched_youtube_video() {
+    let base = start_mock_apis(Counters::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (ytdlp, log) = fake_ytdlp(dir.path());
+    let node = mirror_node(&base, &ytdlp).await;
+    let (endpoint, _voice, mut frames) = start_voice_server(EncryptionMode::AeadAes256GcmRtpSize).await;
+    let (mut events, session_id) = lavalink_ws(&node).await;
+
+    let track = load(&node, "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC").await;
+    let encoded = track["data"]["encoded"].as_str().unwrap().to_string();
+    for round in 0..2 {
+        let response = node
+            .patch(&format!("/v4/sessions/{session_id}/players/5"))
+            .json(&json!({
+                "voice": {"token": "t", "endpoint": endpoint, "sessionId": "s", "channelId": "1"},
+                "track": {"encoded": encoded}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(response.status().is_success());
+        let start = wait_event(&mut events, "TrackStartEvent").await;
+        assert_eq!(
+            start["track"]["info"]["sourceName"], "spotify",
+            "clients keep seeing the Spotify track"
+        );
+        let end = wait_event(&mut events, "TrackEndEvent").await;
+        assert_eq!(end["reason"], "finished", "round {round}");
+        let mut audio = 0;
+        while let Ok(Some(frame)) = tokio::time::timeout(Duration::from_millis(400), frames.recv()).await {
+            if frame.as_slice() != [0xF8, 0xFF, 0xFE] {
+                audio += 1;
+            }
+        }
+        assert!(
+            (95..=105).contains(&audio),
+            "2 s of audio, got {audio} frames (round {round})"
+        );
+    }
+
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let searches: Vec<&str> = calls.lines().filter(|l| l.contains("--dump-single-json")).collect();
+    assert_eq!(searches.len(), 1, "the match is remembered: {calls}");
+    assert!(
+        searches[0].contains("ytsearch5:\"USTEST000001\""),
+        "ISRC searched first: {}",
+        searches[0]
+    );
+    let downloads: Vec<&str> = calls.lines().filter(|l| l.contains("-o -")).collect();
+    assert_eq!(downloads.len(), 1, "second play is a cache hit: {calls}");
+    assert!(
+        downloads[0].contains("watch?v=bbbbbbbbbbb"),
+        "duration-matched candidate: {}",
+        downloads[0]
+    );
+
+    let mirror = node.ctx.cache.index().get_mirror("isrc", "USTEST000001").await.unwrap();
+    assert_eq!(mirror.map(|m| m.0).as_deref(), Some("bbbbbbbbbbb"));
+}
