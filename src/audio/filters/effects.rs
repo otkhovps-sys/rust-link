@@ -57,7 +57,7 @@ impl LowPassStage {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             for (sample, state) in frame.iter_mut().zip(self.state.iter_mut()) {
                 *state += (*sample - *state) * self.factor;
                 *sample = *state;
@@ -84,7 +84,7 @@ impl ChannelMixStage {
 
     pub fn process(&mut self, buf: &mut [f32]) {
         let m = self.0;
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             let (l, r) = (frame[0], frame[1]);
             frame[0] = l * m.left_to_left + r * m.right_to_left;
             frame[1] = l * m.left_to_right + r * m.right_to_right;
@@ -109,7 +109,7 @@ impl RotationStage {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             // +1 pans fully left, -1 fully right.
             let angle = (1.0 + self.lfo.next()) * std::f32::consts::FRAC_PI_4;
             frame[0] *= angle.sin();
@@ -188,7 +188,7 @@ impl DistortionStage {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             for (ch, sample) in frame.iter_mut().enumerate() {
                 let shaped = self.shape(*sample);
                 *sample = self.dc[ch].process(shaped);
@@ -221,7 +221,7 @@ impl TremoloStage {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             let gain = 1.0 - self.depth * 0.5 * (1.0 + self.lfo.next());
             frame[0] *= gain;
             frame[1] *= gain;
@@ -261,7 +261,7 @@ impl VibratoStage {
 
     pub fn process(&mut self, buf: &mut [f32]) {
         const MASK: usize = VIBRATO_RING - 1;
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             self.ring[self.write] = [frame[0], frame[1]];
             let lfo = 0.5 * (1.0 + self.lfo.next());
             let delay = VIBRATO_EXTRA_DELAY + lfo * self.depth * self.max_delay;
@@ -321,7 +321,7 @@ impl KaraokeStage {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             let (l, r) = (frame[0], frame[1]);
             let y = self.a * (l + r) * 0.5 - self.b * self.y1 - self.c * self.y2;
             self.y2 = self.y1;
@@ -395,7 +395,7 @@ impl EqualizerStage {
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        for frame in buf.chunks_exact_mut(2) {
+        for frame in buf.as_chunks_mut::<2>().0 {
             for (sample, history) in frame.iter_mut().zip(self.history.iter_mut()) {
                 let x = *sample;
                 let mut result = x * 0.25;

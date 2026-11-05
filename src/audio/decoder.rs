@@ -170,7 +170,7 @@ impl StereoResampler {
     }
 
     fn process(&mut self, interleaved: &[f32], out: &mut Vec<f32>) -> anyhow::Result<()> {
-        for frame in interleaved.chunks_exact(2) {
+        for frame in interleaved.as_chunks::<2>().0 {
             self.input[0].push(frame[0]);
             self.input[1].push(frame[1]);
         }

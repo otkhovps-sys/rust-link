@@ -860,14 +860,14 @@ mod tests {
     #[test]
     fn channel_mix_and_rotation_move_audio_between_channels() {
         let mut input = sine(440.0, 0.5, 0.5);
-        for frame in input.chunks_exact_mut(2) {
+        for frame in input.as_chunks_mut::<2>().0 {
             frame[1] = 0.0;
         }
         let swapped = run(
             json!({"channelMix": {"leftToLeft": 0, "leftToRight": 1, "rightToLeft": 1, "rightToRight": 0}}),
             &input,
         );
-        assert!(swapped.chunks_exact(2).all(|f| f[0] == 0.0));
+        assert!(swapped.as_chunks::<2>().0.iter().all(|f| f[0] == 0.0));
         assert!((rms(&swapped) - rms(&input)).abs() < 1e-4);
 
         let rotated = run(json!({"rotation": {"rotationHz": 1}}), &sine(440.0, 1.0, 0.5));

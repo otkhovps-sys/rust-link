@@ -163,7 +163,7 @@ impl Wsola {
             let mid_start = offset + body;
             self.mid
                 .copy_from_slice(&self.input[mid_start * 2..(mid_start + ov) * 2]);
-            for (mono, frame) in self.mid_mono.iter_mut().zip(self.mid.chunks_exact(2)) {
+            for (mono, frame) in self.mid_mono.iter_mut().zip(self.mid.as_chunks::<2>().0) {
                 *mono = frame[0] + frame[1];
             }
             self.emitted += self.sequence - ov;
@@ -180,8 +180,13 @@ impl Wsola {
         let ov = self.overlap;
         let span = self.seek + ov;
         self.scan.clear();
-        self.scan
-            .extend(self.input[..span * 2].chunks_exact(2).map(|frame| frame[0] + frame[1]));
+        self.scan.extend(
+            self.input[..span * 2]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|frame| frame[0] + frame[1]),
+        );
         let score = |offset: usize| {
             let window = &self.scan[offset..offset + ov];
             let (mut corr, mut energy) = (0.0f32, 1e-9f32);
