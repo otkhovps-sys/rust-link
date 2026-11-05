@@ -1,29 +1,34 @@
 Audio node tương thích **Lavalink v4**, viết bằng Rust, có cache audio cục bộ với dọn dẹp LRU và tự động backup lên OneDrive.
 
-## Sửa lỗi
+## Tính năng mới
 
-- Giữ nguyên cổng Discord voice trong endpoint (ví dụ `:2096`), tránh lỗi `4006: Session is no longer valid` do kết nối nhầm cổng.
-- Gửi vị trí phát và thời gian hiện tại trước `TrackStartEvent`, tránh thanh tiến độ nhảy đến cuối bài khi client chưa nhận bản cập nhật đầu tiên.
+- **Đủ 10 filter của Lavalink v4:** volume, equalizer, karaoke, timescale (nightcore, vaporwave), tremolo, vibrato, rotation (8D), distortion, channelMix, lowPass.
+- **Link Spotify, Apple Music, Deezer kiểu LavaSrc:** track, album, playlist, top tracks của nghệ sĩ, `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`. Âm thanh lấy từ bản YouTube khớp ISRC hoặc tên bài, có so độ dài, kết quả được nhớ lại. Spotify cần client ID/secret, Apple Music cần developer token, Deezer không cần cấu hình.
+- **Live stream YouTube và radio `.m3u8`** qua HLS.
+- **Bài dài hơn 2 giờ hoặc file quá lớn** phát thẳng từ nguồn bằng HTTP Range, vẫn tua được, không làm đầy cache.
+- **yt-dlp tự tải và tự cập nhật** (`sources.ytdlp.path: managed`), thêm lệnh `rust-link update-ytdlp`.
+- **Gói Linux ARM64** và **image Docker amd64 + arm64** trên `ghcr.io`.
 
 ## Tải về
 
 | File | Nền tảng | Cách chạy |
 |---|---|---|
 | `rust-link-{{VERSION}}-linux-x86_64.tar.gz` | Linux x86_64, file chạy tĩnh | giải nén rồi chạy `./rust-link` |
+| `rust-link-{{VERSION}}-linux-aarch64.tar.gz` | Linux ARM64, file chạy tĩnh | giải nén rồi chạy `./rust-link` |
 | `rust-link-{{VERSION}}-windows-x86_64.zip` | Windows x86_64 | giải nén rồi bấm đúp `start.bat` |
 | `*.sha256` | | mã kiểm tra toàn vẹn |
 
+Image Docker: `ghcr.io/otkhovps-sys/rust-link:v{{VERSION}}` (hoặc `:latest`).
+
 ## Bắt đầu nhanh
 
-1. Cài `yt-dlp` (khuyến nghị cài thêm Deno).
-2. Đổi `server.password` trong `application.yml` nằm cạnh file chạy.
-3. Chạy node, đợi dòng `rust-link is ready to accept connections`.
-4. Trong bot, khai báo node Lavalink với host của máy chủ, cổng `2333` và password vừa đặt.
+1. Đổi `server.password` trong `application.yml` nằm cạnh file chạy (khuyến nghị cài thêm Deno cho YouTube).
+2. Chạy node. Lần đầu node tự tải yt-dlp vào `bin/`, rồi hiện dòng `rust-link is ready to accept connections`.
+3. Trong bot, khai báo node Lavalink với host của máy chủ, cổng `2333` và password vừa đặt.
 
 Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 ## Lưu ý
 
-- Bộ test gồm codec, cache, API, voice giả lập và OneDrive giả lập; test YouTube thật cần bật riêng.
-- Đã xác nhận kết nối Discord voice với DAVE trên Windows bằng bản 0.1.0 và client giữ cổng; bản này sửa trực tiếp việc giữ cổng trong node.
-- Hỗ trợ đủ 10 filter của Lavalink v4; live stream YouTube chưa hỗ trợ.
+- `application.yml` cũ có `sources.ytdlp.path: yt-dlp` vẫn chạy như trước; node gọi `yt-dlp -U` theo lịch. Đổi thành `managed` để node tự quản lý yt-dlp.
+- Phần ghép YouTube cho Spotify/Apple Music/Deezer và phần live YouTube đã được test với API và yt-dlp giả lập; Deezer đã chạy thử với API thật.

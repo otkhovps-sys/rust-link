@@ -27,9 +27,12 @@
 ## ✨ Tính năng chính
 
 - **Thay thế trực tiếp Lavalink v4:** cùng REST, WebSocket, định dạng lỗi, resume session và mã hóa track Lavaplayer. Bot đang chạy Shoukaku, lavalink-client, Wavelink, lavalink.py hay Lavalink4NET chỉ cần đổi host.
-- **Một file chạy, không cần JVM:** file tĩnh (musl) nén còn khoảng 8 MB, RAM lúc rảnh khoảng 17 MB, chạy được trên Ubuntu 18.04, Debian 11, Alpine và Windows.
+- **Một file chạy, không cần JVM:** file tĩnh (musl) nén còn khoảng 8 MB, RAM lúc rảnh khoảng 17 MB, có bản Linux x86_64, Linux ARM64 và Windows, cùng image Docker amd64 + arm64.
+- **yt-dlp tự quản lý:** node tự tải bản yt-dlp chính thức (kiểm SHA-256) và tự cập nhật theo lịch, vì YouTube đổi liên tục và yt-dlp cũ là hỏng phát nhạc.
 - **Bất đồng bộ từ đầu đến cuối:** tokio và axum xử lý mạng; mỗi bài có thread decode riêng, luồng gửi UDP giữ đúng nhịp 20 ms mà không chặn runtime.
 - **Opus passthrough:** gói Opus 48 kHz của YouTube được gửi thẳng tới Discord, không decode và không encode lại khi volume 100 và không bật filter.
+- **Link Spotify, Apple Music, Deezer kiểu LavaSrc:** track, album, playlist, nghệ sĩ và `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`. Lúc phát, node tìm bản YouTube theo ISRC rồi theo tên bài, có so độ dài, và nhớ kết quả trong SQLite.
+- **Phát trực tiếp khi không nên cache:** live YouTube và radio `.m3u8` qua HLS (tự tách audio từ MPEG-TS); bài dài hơn 2 giờ hoặc file quá lớn đọc bằng HTTP Range, vẫn tua được.
 - **Đủ 10 filter Lavalink:** volume, equalizer 15 band, karaoke, timescale (nightcore, vaporwave), tremolo, vibrato, rotation (8D), distortion, channelMix, lowPass. DSP viết thuần Rust, bật cả 10 filter tốn khoảng 1% một nhân CPU cho mỗi player.
 - **Voice Discord đời mới:** Voice Gateway v8, mã hóa `aead_aes256_gcm_rtpsize` hoặc `aead_xchacha20_poly1305_rtpsize`, mã hóa đầu cuối DAVE.
 - **Cache tiết kiệm băng thông:** phát ngay khi file còn đang tải, gộp các lượt tải trùng nhau, dọn LRU theo ngưỡng 90% và 80%, không xóa file đang phát.
@@ -50,9 +53,13 @@ flowchart LR
     Cache -- "hit" --> Disk[("Đĩa cục bộ<br/>/data/cache")]
     Cache -- "cold" --> OneDrive[("OneDrive<br/>AudioCache/")]
     Cache -- "miss" --> Sources["source/<br/>yt-dlp, HTTP"]
+    Mirror["source/mirror<br/>Spotify, Apple Music, Deezer"] -- "ISRC / tên bài" --> Sources
+    Playback -- "Spotify, Apple, Deezer" --> Mirror
     Sources --> Disk
     OneDrive --> Disk
     Disk --> Decoder
+    Playback -- "live, bài dài" --> Direct["source/hls, remote<br/>HLS, HTTP Range"]
+    Direct --> Decoder
 
     subgraph Worker["Thread decoder"]
         Decoder["symphonia<br/>+ libopus"] --> Resample["rubato<br/>48 kHz stereo"]
@@ -88,16 +95,16 @@ stateDiagram-v2
 
 | Thành phần | Yêu cầu | Ghi chú |
 |---|---|---|
-| Hệ điều hành | Linux x86_64 (mọi distro) hoặc Windows 10/11 x86_64 | Nền tảng khác thì tự build |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | bản mới nhất | Tải từ YouTube, SoundCloud và các trang khác |
+| Hệ điều hành | Linux x86_64 hoặc ARM64 (mọi distro), Windows 10/11 x86_64 | Nền tảng khác thì tự build |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | không cần cài | Node tự tải và tự cập nhật (`sources.ytdlp.path: managed`) |
 | [Deno](https://deno.com) | 2.x | JavaScript runtime mà yt-dlp cần cho YouTube |
-| Docker | Engine 20.10+, Compose v2 | Chỉ khi chạy bằng Docker; image có sẵn yt-dlp và Deno |
+| Docker | Engine 20.10+, Compose v2 | Chỉ khi chạy bằng Docker; image có sẵn Deno |
 | Rust | 1.88+, kèm `cmake` và trình biên dịch C | Chỉ khi build từ mã nguồn |
 | Client bot | Thư viện hỗ trợ Lavalink v4 | Nên gửi `voice.channelId` (Lavalink 4.1+) để bật DAVE |
 
 ### Cách 1: file chạy dựng sẵn
 
-Linux, tải gói từ [Releases](https://github.com/otkhovps-sys/rust-link/releases) bằng GitHub CLI:
+Linux, tải gói từ [Releases](https://github.com/otkhovps-sys/rust-link/releases) bằng GitHub CLI (máy ARM64 thay `linux-x86_64` bằng `linux-aarch64`):
 
 ```bash
 gh release download --repo otkhovps-sys/rust-link --pattern '*linux-x86_64.tar.gz'
@@ -107,11 +114,19 @@ gh release download --repo otkhovps-sys/rust-link --pattern '*linux-x86_64.tar.g
 tar -xzf rust-link-*-linux-x86_64.tar.gz && cd rust-link-*-linux-x86_64
 ```
 
-Windows: tải `rust-link-<version>-windows-x86_64.zip`, giải nén, đặt `yt-dlp.exe` cạnh `rust-link.exe` rồi bấm đúp `start.bat`.
+Windows: tải `rust-link-<version>-windows-x86_64.zip`, giải nén rồi bấm đúp `start.bat`. Lần chạy đầu node tự tải `yt-dlp.exe`.
 
 Mỗi gói có kèm file `.sha256` để kiểm tra toàn vẹn.
 
 ### Cách 2: Docker
+
+Image dựng sẵn (amd64 + arm64). Repo private thì `docker login ghcr.io` trước:
+
+```bash
+docker run -d --name rust-link -p 2333:2333 -v rust-link-data:/data ghcr.io/otkhovps-sys/rust-link:latest
+```
+
+Hoặc build từ mã nguồn:
 
 ```bash
 git clone https://github.com/otkhovps-sys/rust-link.git && cd rust-link
@@ -121,7 +136,7 @@ git clone https://github.com/otkhovps-sys/rust-link.git && cd rust-link
 docker compose up -d --build
 ```
 
-Cache, chỉ mục SQLite và `onedrive.json` nằm trên volume `/data`.
+Cache, chỉ mục SQLite, `onedrive.json` và yt-dlp nằm trên volume `/data`.
 
 ### Cách 3: Cargo
 
@@ -141,13 +156,13 @@ cargo build --release --locked
 scripts/package.sh
 ```
 
-`scripts/package.sh` tạo gói `dist/rust-link-<version>-linux-x86_64.tar.gz` giống bản trên Releases. Đặt `TARGET=x86_64-pc-windows-gnu` để tạo gói Windows.
+`scripts/package.sh` tạo gói `dist/rust-link-<version>-linux-x86_64.tar.gz` giống bản trên Releases. Đặt `TARGET=x86_64-pc-windows-gnu` để tạo gói Windows, `TARGET=aarch64-unknown-linux-musl` để tạo gói ARM64 (cần cargo-zigbuild).
 
 ## 🚀 Chạy nhanh và cấu hình
 
 ### Chạy thử trong 30 giây
 
-1. Chạy node ngay trong thư mục giải nén. Giống Lavalink, node tự đọc `application.yml` nằm cạnh file chạy:
+1. Chạy node ngay trong thư mục giải nén. Giống Lavalink, node tự đọc `application.yml` nằm cạnh file chạy; lần đầu nó tải yt-dlp vào `bin/` trong vài giây:
 
 ```bash
 ./rust-link
@@ -208,12 +223,18 @@ Node tìm file cấu hình theo thứ tự: `--config`, `application.yml` hoặc
 | `audio.frameBufferMs` | `400` | Bộ đệm giữa decoder và luồng gửi; filter mới có hiệu lực sau khoảng này |
 | `audio.encryptionMode` | `auto` | `auto`, `aead_aes256_gcm_rtpsize` hoặc `aead_xchacha20_poly1305_rtpsize` |
 | `audio.dave` | `true` | Hỗ trợ mã hóa đầu cuối DAVE |
-| `sources.ytdlp.path` | `yt-dlp` | Đường dẫn tới yt-dlp |
+| `sources.ytdlp.path` | `managed` (gói và Docker) | `managed`: node tự tải yt-dlp; hoặc đường dẫn tới yt-dlp có sẵn |
+| `sources.ytdlp.autoUpdate` / `updateIntervalHours` | `true` / `24` | Tự cập nhật yt-dlp theo lịch |
+| `sources.spotify.clientId` / `clientSecret` | trống | Bật link Spotify (app miễn phí tại developer.spotify.com) |
+| `sources.appleMusic.mediaApiToken` | trống | Bật link Apple Music (MusicKit developer token) |
+| `sources.deezer.enabled` | `true` | Link Deezer, không cần tài khoản |
+| `sources.mirrorProviders` | ISRC rồi tên bài | Cách tìm bản YouTube cho Spotify, Apple Music, Deezer |
 | `cache.directory` | `/data/cache` | Thư mục chứa file audio |
 | `cache.maxSize` | `20GiB` | Dung lượng tối đa của cache |
 | `cache.highWatermark` / `cache.lowWatermark` | `0.90` / `0.80` | Ngưỡng bắt đầu và dừng dọn LRU |
 | `cache.evictUnsynced` | `false` | Cho phép xóa file chưa backup |
 | `cache.progressivePlayback` | `true` | Phát trong lúc file còn đang tải |
+| `cache.maxTrackDurationSecs` | `7200` | Bài dài hơn phát thẳng từ nguồn, không lưu cache (0 = không giới hạn) |
 | `onedrive.enabled` | `false` | Bật backup OneDrive |
 | `onedrive.remoteFolder` | `AudioCache` | Thư mục trên OneDrive |
 | `onedrive.chunkSize` | `10MiB` | Kích thước chunk upload, làm tròn xuống bội số 320 KiB |
@@ -252,7 +273,7 @@ Chuẩn Lavalink v4, mọi route yêu cầu header `Authorization`:
 | GET | `/v4/sessions/{sessionId}/players` |
 | GET, PATCH, DELETE | `/v4/sessions/{sessionId}/players/{guildId}` (PATCH hỗ trợ `?noReplace=true`) |
 
-Identifier hỗ trợ: `ytsearch:`, `ytmsearch:`, `scsearch:`, `cachesearch:` (tìm trong cache), URL YouTube (video, shorts, playlist), SoundCloud, file audio hay radio HTTP, URL khác qua extractor của yt-dlp, và video ID YouTube 11 ký tự.
+Identifier hỗ trợ: `ytsearch:`, `ytmsearch:`, `scsearch:`, `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`, `cachesearch:` (tìm trong cache), URL YouTube (video, shorts, playlist, live), Spotify, Apple Music, Deezer, SoundCloud, file audio, radio HTTP và `.m3u8`, URL khác qua extractor của yt-dlp, và video ID YouTube 11 ký tự.
 
 Endpoint mở rộng cho vận hành:
 
@@ -282,17 +303,23 @@ Endpoint mở rộng cho vận hành:
 │   │   ├── voice_gateway.rs # Discord Voice Gateway v8 + UDP
 │   │   ├── crypto.rs        # RTP + AES-GCM / XChaCha20-Poly1305
 │   │   └── dave.rs          # mã hóa đầu cuối DAVE
-│   ├── cache/               # chỉ mục SQLite, hit/cold/miss, worker LRU, đọc file đang tải
+│   ├── cache/               # chỉ mục SQLite, hit/cold/miss, phát thẳng, worker LRU
 │   ├── onedrive/            # OAuth2, Graph API, upload session, QuickXorHash, worker backup
-│   └── source/              # yt-dlp, HTTP, loadtracks
-├── tests/                   # test tích hợp: mock Discord voice, mock Microsoft Graph, API
+│   └── source/
+│       ├── mod.rs           # loadtracks, chọn nguồn, phát thẳng (open_direct), ghép mirror
+│       ├── ytdlp.rs         # gọi yt-dlp; ytdlp_update.rs: tự tải và cập nhật yt-dlp
+│       ├── http.rs          # file audio, radio HTTP
+│       ├── hls.rs, mpegts.rs # HLS (live, .m3u8) và tách audio MPEG-TS
+│       ├── remote.rs        # đọc HTTP Range cho bài phát thẳng
+│       └── mirror/          # Spotify, Apple Music, Deezer kiểu LavaSrc
+├── tests/                   # test tích hợp: mock Discord voice, Microsoft Graph, Spotify/Apple/Deezer, HLS
 ├── migrations/              # schema SQLite (nhúng vào file chạy)
 ├── config/application.yml   # cấu hình mẫu có chú thích
 ├── docs/HUONG_DAN.md        # hướng dẫn triển khai và đấu nối bot
-├── packaging/               # start.bat, unit systemd, mẫu ghi chú phát hành
-├── scripts/package.sh       # đóng gói tar.gz (Linux) và zip (Windows)
+├── packaging/               # start.bat, unit systemd, Dockerfile.release, mẫu ghi chú phát hành
+├── scripts/package.sh       # đóng gói tar.gz (Linux x86_64, ARM64) và zip (Windows)
 ├── Dockerfile, docker-compose.yml
-└── .github/workflows/       # ci.yml (fmt, clippy, test), release.yml (đăng Releases)
+└── .github/workflows/       # ci.yml (lint, test, MSRV), release.yml (Releases + image ghcr.io)
 ```
 
 ## 🛣 Roadmap, đóng góp và giấy phép
@@ -304,11 +331,14 @@ Endpoint mở rộng cho vận hành:
 - [x] Cache cục bộ với LRU, backup và khôi phục qua OneDrive
 - [x] Đủ 10 filter của Lavalink
 - [x] Gói Linux, Windows, Docker và phát hành tự động lên Releases
-- [ ] Live stream YouTube (HLS / MPEG-TS)
+- [x] Live stream YouTube (HLS / MPEG-TS), phát thẳng bài quá dài
+- [x] Gói Linux ARM64, image Docker amd64 + arm64 trên ghcr.io
+- [x] Tự tải và tự cập nhật yt-dlp
+- [x] Link Spotify, Apple Music, Deezer kiểu LavaSrc
 - [ ] Route planner (xoay vòng IPv6)
 - [ ] Endpoint Prometheus `/metrics`
 - [ ] Số liệu CPU và RAM trong `stats` trên Windows
-- [ ] Gói Linux aarch64
+- [ ] Filter có hiệu lực ngay, không chờ bộ đệm
 
 Hiện `pluginFilters` chỉ được lưu và trả lại, vì rust-link không chạy plugin JVM của Lavalink.
 
@@ -331,7 +361,7 @@ Thay đổi phá vỡ tương thích thêm `!` sau loại (`feat!:`) và ghi `BR
 ### Quy trình Pull Request
 
 1. Tạo nhánh từ nhánh mặc định, đặt tên theo loại thay đổi: `feat/...`, `fix/...`, `docs/...`.
-2. Chạy đủ ba bước kiểm tra mà CI cũng chạy:
+2. Chạy đủ ba bước kiểm tra mà CI cũng chạy (CI dùng clippy của một bản Rust cố định, xem `LINT_TOOLCHAIN` trong `ci.yml`):
 
 ```bash
 cargo fmt --all -- --check

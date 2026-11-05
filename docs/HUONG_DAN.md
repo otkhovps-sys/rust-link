@@ -6,37 +6,29 @@ rust-link là một audio node nói chuẩn **Lavalink v4**. Bot Discord đang d
 
 | | Lavalink | rust-link |
 |---|---|---|
-| File chạy | `Lavalink.jar` | `rust-link` (Linux x86_64) hoặc `rust-link.exe` (Windows x86_64), mỗi bản là một file duy nhất |
-| Cần cài thêm | Java 17+ | `yt-dlp` (khuyến nghị thêm Deno) |
+| File chạy | `Lavalink.jar` | `rust-link` (Linux x86_64, Linux ARM64) hoặc `rust-link.exe` (Windows x86_64), mỗi bản là một file duy nhất |
+| Cần cài thêm | Java 17+ | Không bắt buộc: yt-dlp được tự tải và tự cập nhật. Nên cài thêm Deno |
 | File cấu hình | `application.yml` cạnh file chạy | `application.yml` cạnh file chạy |
 | Lệnh chạy | `java -jar Lavalink.jar` | `./rust-link` hoặc bấm đúp `start.bat` |
 | Port / password mặc định | `2333` / `youshallnotpass` | `2333` / `youshallnotpass` |
 | WebSocket | `/v4/websocket` | `/v4/websocket` |
 | Thư mục log | `./logs/` | `./logs/` |
-| Plugin Java (LavaSrc, youtube-plugin...) | có | không dùng được |
+| Plugin Java (LavaSrc, youtube-plugin...) | có | không chạy được plugin, nhưng có sẵn link Spotify, Apple Music, Deezer kiểu LavaSrc |
+| Bài rất dài, live stream | phát trực tiếp | phát trực tiếp, không lưu cache (live YouTube qua HLS) |
 | Filter (equalizer, timescale, karaoke...) | đủ 10 filter | đủ 10 filter |
 | Cache audio + backup OneDrive | không | có |
 
 ## 2. Chuẩn bị máy chủ
 
-- **Hệ điều hành:** Linux x86_64 bất kỳ, hoặc Windows 10/11 x86_64. Bản Linux được link tĩnh nên không phụ thuộc phiên bản glibc, đã chạy thử trên Ubuntu 18.04, Debian 11 và Alpine 3.20. Bản Windows mới được chạy thử bằng Wine, chưa thử trên máy Windows thật. macOS cần tự build từ mã nguồn.
-- **yt-dlp:** bắt buộc để tìm và tải nhạc YouTube, SoundCloud. Bản standalone không cần Python:
-
-```bash
-sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp
-```
-
-```bash
-sudo chmod a+rx /usr/local/bin/yt-dlp
-```
-
+- **Hệ điều hành:** Linux x86_64 hoặc ARM64 bất kỳ (ví dụ VPS Ampere miễn phí của Oracle Cloud), hoặc Windows 10/11 x86_64. Bản Linux được link tĩnh nên không phụ thuộc phiên bản glibc, đã chạy thử trên Ubuntu 18.04, Debian 11 và Alpine 3.20. Bản Windows đã có người dùng chạy thật, kể cả voice có DAVE. macOS cần tự build từ mã nguồn.
+- **yt-dlp:** không cần cài tay. Với `sources.ytdlp.path: managed` (mặc định trong gói), lần chạy đầu node tự tải bản yt-dlp chính thức cho đúng hệ điều hành vào thư mục `bin/`, kiểm tra SHA-256 theo trang release của yt-dlp, rồi tự cập nhật mỗi 24 giờ. Muốn dùng yt-dlp đã cài sẵn thì ghi đường dẫn vào `path`; khi đó node gọi `yt-dlp -U` theo lịch.
 - **Deno (khuyến nghị):** yt-dlp bản mới cần một JavaScript runtime để lấy đủ định dạng YouTube. Cài theo hướng dẫn tại deno.com và đặt file `deno` vào `/usr/local/bin`.
 - **Mạng:** mở cổng TCP `2333` cho bot. Node cần gửi UDP ra ngoài tới voice server của Discord.
 
-Cập nhật yt-dlp định kỳ, vì YouTube thay đổi thường xuyên:
+Cập nhật yt-dlp ngay, không chờ lịch:
 
 ```bash
-sudo yt-dlp -U
+./rust-link update-ytdlp
 ```
 
 ## 3. Cách 1: chạy từ file nén (giống Lavalink.jar)
@@ -46,6 +38,7 @@ Tải bản dựng sẵn tại trang Releases: https://github.com/otkhovps-sys/r
 | File | Dành cho |
 |---|---|
 | `rust-link-<version>-linux-x86_64.tar.gz` | Linux x86_64 |
+| `rust-link-<version>-linux-aarch64.tar.gz` | Linux ARM64 (Oracle Ampere, Raspberry Pi 4/5 chạy hệ 64-bit) |
 | `rust-link-<version>-windows-x86_64.zip` | Windows x86_64 |
 | `*.sha256` | Mã kiểm tra toàn vẹn của file tải về |
 
@@ -74,8 +67,11 @@ rust-link-0.1.1-linux-x86_64/
 ├── onedrive.example.json   # mẫu credentials OneDrive
 ├── rust-link.service       # mẫu systemd
 ├── HUONG_DAN.md            # tài liệu này
-└── README.md
+├── README.md
+└── LICENSE
 ```
+
+Lần chạy đầu, node tạo thêm `bin/` (yt-dlp tự tải), `data/cache/` (cache audio) và `logs/`.
 
 Đổi password trong `application.yml`, mục `server.password`, rồi chạy:
 
@@ -130,13 +126,13 @@ journalctl -u rust-link -f
 ### Chạy trên Windows
 
 1. Giải nén `rust-link-<version>-windows-x86_64.zip`, ví dụ vào `C:\rust-link`.
-2. Tải `yt-dlp.exe` từ https://github.com/yt-dlp/yt-dlp/releases và đặt cùng thư mục với `rust-link.exe`, hoặc vào một thư mục trong PATH. Nên cài thêm Deno.
+2. Không cần tải yt-dlp: lần chạy đầu node tự tải `yt-dlp.exe` vào `bin\`. Nên cài thêm Deno.
 3. Mở `application.yml` bằng Notepad, đổi `server.password`.
 4. Bấm đúp `start.bat`. Cửa sổ dòng lệnh hiện dòng `rust-link is ready to accept connections` là node đã sẵn sàng.
 
 Trong gói Windows, cache nằm ở `data\cache` và log ở `logs\`, cạnh `rust-link.exe`. Khi Windows Firewall hỏi, chọn **Allow access** để bot kết nối được vào cổng 2333.
 
-Nếu `yt-dlp.exe` nằm ở chỗ khác, khai báo đường dẫn đầy đủ trong `application.yml`, dùng dấu `/` hoặc đặt trong nháy đơn:
+Muốn dùng `yt-dlp.exe` có sẵn ở chỗ khác, khai báo đường dẫn đầy đủ trong `application.yml`, dùng dấu `/` hoặc đặt trong nháy đơn:
 
 ```yaml
 sources:
@@ -148,13 +144,23 @@ Trên Windows, phần `stats` báo CPU và RAM bằng 0 vì phần đo hiện ch
 
 ## 4. Cách 2: chạy bằng Docker
 
-Từ thư mục mã nguồn:
+Mỗi bản phát hành có image dựng sẵn cho amd64 và arm64 trên GitHub Container Registry. Repo đang private thì đăng nhập trước bằng một Personal Access Token có quyền `read:packages`:
+
+```bash
+docker login ghcr.io -u <github-username>
+```
+
+```bash
+docker run -d --name rust-link -p 2333:2333 -v rust-link-data:/data -e RUSTLINK_SERVER_PASSWORD=doi-mat-khau ghcr.io/otkhovps-sys/rust-link:latest
+```
+
+Hoặc build từ thư mục mã nguồn:
 
 ```bash
 docker compose up -d --build
 ```
 
-Image đã có sẵn yt-dlp và Deno, chạy bằng user không phải root (uid 322, giống image Lavalink). Cache, chỉ mục SQLite và `onedrive.json` nằm trên volume `/data`. Đổi password qua biến `RUSTLINK_SERVER_PASSWORD` trong `docker-compose.yml`.
+Image có sẵn Deno, chạy bằng user không phải root (uid 322, giống image Lavalink). yt-dlp được tự tải và tự cập nhật vào `/data/bin`. Cache, chỉ mục SQLite và `onedrive.json` cũng nằm trên volume `/data`, nên còn nguyên khi tạo lại container. Đổi password qua biến `RUSTLINK_SERVER_PASSWORD`.
 
 Muốn dùng file cấu hình riêng, bỏ comment dòng mount `application.yml` trong `docker-compose.yml`. File đó phải để `cache.directory: /data/cache` và `onedrive.credentialsFile: /data/onedrive.json`.
 
@@ -188,9 +194,23 @@ rustup target add x86_64-pc-windows-gnu
 TARGET=x86_64-pc-windows-gnu scripts/package.sh
 ```
 
+Bản Linux ARM64 được cross-compile bằng cargo-zigbuild (zig làm trình biên dịch C). Có `qemu-aarch64-static` thì script chạy thử file ARM64 bằng giả lập:
+
+```bash
+pip install ziglang cargo-zigbuild
+```
+
+```bash
+rustup target add aarch64-unknown-linux-musl
+```
+
+```bash
+TARGET=aarch64-unknown-linux-musl scripts/package.sh
+```
+
 ### Phát hành lên GitHub Releases
 
-Workflow `.github/workflows/release.yml` chạy test, build hai gói Linux và Windows rồi đăng lên Releases với tag `v<version>` lấy từ `Cargo.toml`. Có hai cách kích hoạt:
+Workflow `.github/workflows/release.yml` chạy test, build ba gói (Linux x86_64, Linux ARM64, Windows) rồi đăng lên Releases với tag `v<version>` lấy từ `Cargo.toml`, sau đó đẩy image Docker amd64 + arm64 lên `ghcr.io`. Có hai cách kích hoạt:
 
 - **Thủ công:** vào tab **Actions** trên GitHub, chọn workflow **Release**, bấm **Run workflow**. Tag được tạo trên commit đã chọn.
 - **Bằng tag:** push tag khớp phiên bản, ví dụ `v0.1.1`.
@@ -221,6 +241,11 @@ rust-link đọc được file `application.yml` của Lavalink v4. Khóa nào r
 | `lavalink.server.bufferDurationMs` | `audio.frameBufferMs` |
 | `logging.level.root`, `logging.level.lavalink` | `logging.level` |
 | `logging.file.path` | `logging.file.path` |
+| `lavalink.server.filters.*` | `lavalink.filters.*` |
+| `plugins.lavasrc.providers` | `sources.mirrorProviders` |
+| `plugins.lavasrc.sources.spotify`, `.applemusic`, `.deezer` | `sources.spotify.enabled`, `sources.appleMusic.enabled`, `sources.deezer.enabled` |
+| `plugins.lavasrc.spotify.clientId`, `.clientSecret`, `.countryCode`, `.playlistLoadLimit`, `.albumLoadLimit` | cùng tên trong `sources.spotify` |
+| `plugins.lavasrc.applemusic.mediaAPIToken`, `.countryCode` | `sources.appleMusic.mediaApiToken`, `.countryCode` |
 
 Nếu một file có cả hai kiểu khóa, khóa của rust-link được ưu tiên. File của Lavalink không có mục `cache`, nên cache sẽ nằm ở `/data/cache` mặc định. Hãy thêm mục `cache` nếu user chạy node không có quyền ghi vào đó.
 
@@ -291,11 +316,37 @@ Lavalink4NET, Lavalink-Client cho JDA, DisGo và các thư viện khác khai bá
 ### Lưu ý khi đấu nối
 
 - **Discord E2EE (DAVE):** Discord yêu cầu mã hóa đầu-cuối cho voice. rust-link chỉ bật DAVE khi client gửi kèm `voice.channelId`, việc mà các client hỗ trợ Lavalink 4.1+ đã làm. Client quá cũ không gửi trường này thì Discord có thể đóng kết nối với mã 4017, bot sẽ nhận `WebSocketClosedEvent`.
-- **Tìm kiếm:** dùng `ytsearch:`, `ytmsearch:` (xử lý như `ytsearch:`), `scsearch:`, `cachesearch:` (chỉ tìm trong cache), hoặc dán thẳng URL.
+- **Tìm kiếm:** dùng `ytsearch:`, `ytmsearch:` (xử lý như `ytsearch:`), `scsearch:`, `spsearch:` (Spotify), `amsearch:` (Apple Music), `dzsearch:` (Deezer), `dzisrc:` (Deezer theo mã ISRC), `cachesearch:` (chỉ tìm trong cache), hoặc dán thẳng URL.
 - **Nhiều node:** có thể khai báo rust-link song song với Lavalink cũ trong danh sách node của client để chuyển dần.
 - **Filter:** hỗ trợ đủ 10 filter của Lavalink v4: `volume`, `equalizer` (15 band), `karaoke`, `timescale` (speed/pitch/rate, dùng cho nightcore và vaporwave), `tremolo`, `vibrato`, `rotation` (8D), `distortion`, `channelMix`, `lowPass`. Filter mới có hiệu lực sau khoảng `audio.frameBufferMs` (mặc định 0,4 giây), lúc phần âm thanh đã nằm trong bộ đệm phát hết. Khi bật `timescale`, vị trí bài hát vẫn tính theo thời gian của bài, nên thanh tiến độ trên bot chạy nhanh hoặc chậm theo `speed × rate`. `pluginFilters` được lưu và trả lại nhưng không xử lý, vì rust-link không chạy plugin của Lavalink. Muốn khóa filter nào thì đặt `false` trong `lavalink.filters` (hoặc `lavalink.server.filters` nếu dùng file của Lavalink).
 
-## 8. Kiểm tra node hoạt động
+## 8. Link Spotify, Apple Music, Deezer
+
+rust-link xử lý các link này giống plugin LavaSrc: thông tin bài (tên, nghệ sĩ, ảnh, ISRC) lấy từ API của dịch vụ, còn âm thanh lấy từ bản tương ứng trên YouTube, tìm lúc bài bắt đầu phát. Bot vẫn thấy track Spotify gốc (`sourceName: spotify`, `pluginInfo` giống LavaSrc), nên code bot đang dùng LavaSrc không cần sửa.
+
+Hỗ trợ: track, album, playlist, top tracks của nghệ sĩ, link `open.spotify.com` (kể cả dạng `intl-vi`), URI `spotify:track:...`, link `music.apple.com` (kể cả link album có `?i=` trỏ tới một bài), link `deezer.com` và link rút gọn `link.deezer.com`.
+
+**Spotify:** cần client ID và client secret (miễn phí).
+
+1. Vào https://developer.spotify.com/dashboard, tạo app, phần API chọn **Web API**.
+2. Chép **Client ID** và **Client secret** vào `sources.spotify.clientId` và `clientSecret`.
+3. Khởi động lại node. `/v4/info` sẽ có `spotify` trong `sourceManagers`.
+
+Từ cuối 2024, Spotify không cho app mới đọc các playlist do chính Spotify tạo (ví dụ "Today's Top Hits"); các link đó trả lỗi "not found". Playlist do người dùng tạo vẫn đọc được.
+
+**Apple Music:** cần developer token MusicKit, tạo trong tài khoản Apple Developer (có phí hằng năm). Điền token vào `sources.appleMusic.mediaApiToken`. Token hết hạn tối đa sau 6 tháng, cần tạo lại.
+
+**Deezer:** không cần cấu hình, dùng API công khai.
+
+**Cách chọn bản YouTube:** node thử lần lượt các mẫu trong `sources.mirrorProviders`: mặc định tìm theo mã ISRC trước, sau đó theo "tên bài nghệ sĩ". Trong 5 kết quả đầu, node chọn bản có độ dài lệch không quá 10 giây (hoặc 15% với bài dài), để tránh nhầm sang bản loop 1 giờ hay bản live. Kết quả ghép được lưu trong SQLite theo bài và theo ISRC, nên mỗi bài chỉ tìm một lần, và cùng một bài trên Spotify, Apple Music hay Deezer dùng chung một file cache.
+
+## 9. Bài rất dài và live stream
+
+- **Bài dài:** bài dài hơn `cache.maxTrackDurationSecs` (mặc định 2 giờ), hoặc file HTTP lớn hơn `cache.maxFileSize`, được phát thẳng từ nguồn và không lưu cache. Node đọc từng đoạn 1 MiB bằng HTTP Range và tải trước đoạn kế tiếp, nên vẫn tua được và không làm đầy cache bằng các bản mix 10 giờ. Link YouTube hết hạn giữa chừng thì node tự lấy link mới.
+- **Live stream:** live YouTube được phát qua HLS, ưu tiên luồng chỉ có audio. Link `.m3u8` (radio HLS) cũng dùng được. Live stream không tua được và không lưu cache.
+- **Radio HTTP thường** (MP3, AAC, Ogg) vẫn phát như trước.
+
+## 10. Kiểm tra node hoạt động
 
 ```bash
 curl -H "Authorization: youshallnotpass" http://localhost:2333/version
@@ -311,13 +362,17 @@ curl -H "Authorization: youshallnotpass" http://localhost:2333/v4/rustlink/cache
 
 Lệnh đầu trả về `4.1.1`. Lệnh thứ hai trả về JSON có `"loadType":"search"`. Lệnh cuối cho biết số bài đã cache, dung lượng đang dùng và số bài chờ backup.
 
-## 9. Sự cố thường gặp
+## 11. Sự cố thường gặp
 
 | Hiện tượng | Nguyên nhân và cách xử lý |
 |---|---|
 | HTTP 401 `Unauthorized` | Password trong bot khác `server.password`. |
-| `failed to start yt-dlp` | yt-dlp chưa cài hoặc không nằm trong PATH. Cài lại, hoặc khai báo `sources.ytdlp.path`. |
-| `loadType: error` với YouTube | yt-dlp đã cũ hoặc thiếu Deno. Chạy `yt-dlp -U` và cài Deno. |
+| `failed to start yt-dlp` | Với `path: managed`: node chưa tải được yt-dlp (xem log lúc khởi động, kiểm tra mạng tới github.com). Với đường dẫn tự khai báo: yt-dlp không nằm ở đó. |
+| `loadType: error` với YouTube | yt-dlp đã cũ hoặc thiếu Deno. Chạy `./rust-link update-ytdlp` và cài Deno. |
+| `yt-dlp was installed with pip` trong log | yt-dlp cài qua pip không tự cập nhật bằng `-U`. Chạy `pip install -U yt-dlp`, hoặc chuyển sang `sources.ytdlp.path: managed`. |
+| Link Spotify báo `needs sources.spotify.clientId` | Chưa cấu hình Spotify, xem mục 8. |
+| Playlist Spotify báo "not found" | Playlist do Spotify tạo, app mới không đọc được. Dùng playlist của người dùng. |
+| Bài Spotify phát sai bản (remix, cover) | Bài không có ISRC hoặc ISRC không tìm ra trên YouTube. Thêm mẫu chính xác hơn vào `sources.mirrorProviders`, ví dụ `'ytsearch:%QUERY% official audio'`. |
 | `HTTP Error 429` hoặc "Sign in to confirm you're not a bot" | YouTube đang giới hạn IP của máy chủ. Xuất cookies từ trình duyệt và thêm `extraArgs: ["--cookies", "/duong/dan/cookies.txt"]` vào mục `sources.ytdlp`. |
 | `cannot create cache directory` | User chạy node không có quyền ghi thư mục cache. Đổi `cache.directory` hoặc cấp quyền. |
 | `WebSocketClosedEvent` mã 4006 ngay khi vào voice | Bản 0.1.0 bỏ cổng của endpoint `host:port`, có thể kết nối nhầm cổng Discord. Bản sửa giữ nguyên cổng (ví dụ `:2096`); với binary 0.1.0 cũ, client có thể gửi `wss://host:port` để tránh lỗi này. |
@@ -326,7 +381,7 @@ Lệnh đầu trả về `4.1.1`. Lệnh thứ hai trả về JSON có `"loadTyp
 | Bot vào kênh nhưng không có tiếng | Tường lửa chặn UDP gửi ra ngoài. Mở UDP outbound. |
 | Bài phát lần đầu chậm vài giây | Bài đang được tải qua yt-dlp. Từ lần thứ hai bài được phát thẳng từ cache. |
 
-## 10. Bật backup OneDrive
+## 12. Bật backup OneDrive
 
 1. Tạo app trong Azure Portal, mục App registrations, bật **Allow public client flows** và cấp quyền `Files.ReadWrite`, `offline_access`.
 2. Đăng nhập một lần bằng lệnh dưới đây; credentials được ghi ra file theo `onedrive.credentialsFile`.

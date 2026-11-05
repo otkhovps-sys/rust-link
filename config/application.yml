@@ -56,6 +56,27 @@ sources:
     searchLimit: 10
     metadataTimeoutSecs: 30
     extraArgs: []                # ví dụ: ["--cookies", "/config/cookies.txt"]
+  # Link Spotify / Apple Music / Deezer: lấy thông tin bài từ API của dịch vụ, lúc phát thì
+  # tìm bản tương ứng trên YouTube theo mirrorProviders (giống plugin LavaSrc của Lavalink).
+  spotify:
+    enabled: true
+    clientId: ""                 # tạo app miễn phí tại https://developer.spotify.com/dashboard
+    clientSecret: ""
+    countryCode: VN
+    playlistLoadLimit: 6         # số trang 100 bài lấy từ playlist
+    albumLoadLimit: 6            # số trang 50 bài lấy từ album
+  appleMusic:
+    enabled: true
+    mediaApiToken: ""            # MusicKit developer token từ tài khoản Apple Developer
+    countryCode: us
+    playlistLoadLimit: 6
+    albumLoadLimit: 6
+  deezer:
+    enabled: true                # API công khai, không cần tài khoản
+    playlistLoadLimit: 6
+  mirrorProviders:               # thử lần lượt, %ISRC% = mã ISRC, %QUERY% = "tên bài nghệ sĩ"
+    - 'ytsearch:"%ISRC%"'
+    - 'ytsearch:%QUERY%'
 
 cache:
   enabled: true
