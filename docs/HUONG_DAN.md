@@ -45,28 +45,30 @@ Tải bản dựng sẵn tại trang Releases: https://github.com/otkhovps-sys/r
 Kiểm tra file tải về trên Linux:
 
 ```bash
-sha256sum -c rust-link-0.2.0-linux-x86_64.tar.gz.sha256
+sha256sum -c rust-link-0.2.1-linux-x86_64.tar.gz.sha256
 ```
 
 Giải nén gói `rust-link-<version>-linux-x86_64.tar.gz`:
 
 ```bash
-tar -xzf rust-link-0.2.0-linux-x86_64.tar.gz
+tar -xzf rust-link-0.2.1-linux-x86_64.tar.gz
 ```
 
 ```bash
-cd rust-link-0.2.0-linux-x86_64
+cd rust-link-0.2.1-linux-x86_64
 ```
 
 Nội dung thư mục:
 
 ```text
-rust-link-0.2.0-linux-x86_64/
+rust-link-0.2.1-linux-x86_64/
 ├── rust-link               # file chạy duy nhất
 ├── application.yml         # cấu hình, giống application.yml của Lavalink
 ├── onedrive.example.json   # mẫu credentials OneDrive
 ├── rust-link.service       # mẫu systemd
 ├── HUONG_DAN.md            # tài liệu này
+├── PLUGINS.md              # hướng dẫn viết plugin
+├── examples/plugins/       # plugin mẫu: radio (Python), local-files (Node.js)
 ├── README.md
 └── LICENSE
 ```
@@ -98,7 +100,7 @@ sudo useradd -r -d /opt/rust-link -s /usr/sbin/nologin rustlink
 ```
 
 ```bash
-sudo cp -r rust-link-0.2.0-linux-x86_64 /opt/rust-link
+sudo cp -r rust-link-0.2.1-linux-x86_64 /opt/rust-link
 ```
 
 ```bash
@@ -213,14 +215,14 @@ TARGET=aarch64-unknown-linux-musl scripts/package.sh
 Workflow `.github/workflows/release.yml` chạy test, build ba gói (Linux x86_64, Linux ARM64, Windows) rồi đăng lên Releases với tag `v<version>` lấy từ `Cargo.toml`, sau đó đẩy image Docker amd64 + arm64 lên `ghcr.io`. Có hai cách kích hoạt:
 
 - **Thủ công:** vào tab **Actions** trên GitHub, chọn workflow **Release**, bấm **Run workflow**. Tag được tạo trên commit đã chọn.
-- **Bằng tag:** push tag khớp phiên bản, ví dụ `v0.2.0`.
+- **Bằng tag:** push tag khớp phiên bản, ví dụ `v0.2.1`.
 
 ```bash
-git tag v0.2.0
+git tag v0.2.1
 ```
 
 ```bash
-git push origin v0.2.0
+git push origin v0.2.1
 ```
 
 Workflow từ chối chạy nếu Release cho phiên bản đó đã tồn tại. Muốn phát hành bản mới, tăng `version` trong `Cargo.toml` trước.

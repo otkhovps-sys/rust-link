@@ -2,16 +2,12 @@ Audio node tương thích **Lavalink v4**, viết bằng Rust, có cache audio c
 
 ## Tính năng mới
 
-- **Đủ 10 filter của Lavalink v4:** volume, equalizer, karaoke, timescale (nightcore, vaporwave), tremolo, vibrato, rotation (8D), distortion, channelMix, lowPass.
-- **Link Spotify, Apple Music, Deezer kiểu LavaSrc:** track, album, playlist, top tracks của nghệ sĩ, `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`. Âm thanh lấy từ bản YouTube khớp ISRC hoặc tên bài, có so độ dài, kết quả được nhớ lại. Spotify cần client ID/secret, Apple Music cần developer token, Deezer không cần cấu hình.
-- **Live stream YouTube và radio `.m3u8`** qua HLS.
-- **Bài dài hơn 2 giờ hoặc file quá lớn** phát thẳng từ nguồn bằng HTTP Range, vẫn tua được, không làm đầy cache.
-- **yt-dlp tự tải và tự cập nhật** (`sources.ytdlp.path: managed`), thêm lệnh `rust-link update-ytdlp`.
-- **Gói Linux ARM64** và **image Docker amd64 + arm64** trên `ghcr.io`.
-- **Filter và âm lượng có hiệu lực ngay** (khoảng 20 ms), không chờ bộ đệm.
-- **Cache kết quả tìm kiếm** 6 giờ và **tải trước playlist** (3 bài kế tiếp), nên bài kế phát ngay từ đĩa.
-- **Live stream dùng chung:** nhiều server phát cùng một live stream chỉ tốn một lần tải và giải mã.
-- **yt-dlp bản thư mục:** mỗi lần gọi yt-dlp nhanh gấp đôi.
+- **Plugin viết bằng ngôn ngữ nào cũng được:** plugin là chương trình riêng (Python, Node.js, Go...) nói chuyện với node bằng JSON qua stdin/stdout. Plugin thêm được nguồn nhạc theo tiền tố hoặc mẫu URL, chọn nơi phát bài (URL kèm header, file trên máy chủ, hoặc chuyển sang bài khác), nhận sự kiện websocket, thêm route REST riêng và gọi lại REST của node. Plugin bị crash được tự chạy lại; trạng thái xem ở `GET /v4/rustlink/plugins`, plugin đang chạy hiện trong `/v4/info`.
+- **Lệnh `rust-link plugin new <tên> [--lang node]`** tạo sẵn khung plugin kèm SDK Python hoặc Node.js (không cần cài thư viện); `rust-link plugin list` liệt kê plugin sẽ được chạy.
+- **Hai plugin mẫu** trong `examples/plugins/`: `radio` (Python, đài radio theo tên) và `local-files` (Node.js, phát file nhạc trong thư mục trên máy chủ). Hướng dẫn đầy đủ trong `PLUGINS.md`.
+- **Link YouTube Mix (`list=RD...`) thành playlist:** trước đây chỉ phát một video, nay trả về playlist 25 bài đầu với video trong link được chọn. Link radio của YouTube Music (`list=RDAMVM...`) cũng vậy. Đổi số bài bằng `sources.youtubeMixLimit` (0 = chỉ phát video trong link như cũ).
+
+Mọi tính năng của 0.2.0 (đủ 10 filter, link Spotify/Apple Music/Deezer, live stream, tự cập nhật yt-dlp...) vẫn giữ nguyên.
 
 ## Tải về
 
@@ -34,6 +30,8 @@ Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 ## Lưu ý
 
+- Nâng cấp từ 0.2.0: chỉ cần thay file chạy. Không có plugin nào được bật sẵn; node chạy plugin trong thư mục `plugins/` cạnh file chạy (Docker: `/data/plugins`).
+- Plugin Python cần Python 3.9+, plugin Node.js cần Node.js 16+ trên máy chủ. Image Docker không có sẵn hai runtime này; `PLUGINS.md` có Dockerfile mẫu để thêm.
 - Nâng cấp từ 0.1.x: thay file chạy, giữ nguyên thư mục `data/`. Chỉ mục SQLite tự thêm các bảng mới khi khởi động; các khóa cấu hình mới đều có giá trị mặc định.
 - `application.yml` cũ có `sources.ytdlp.path: yt-dlp` vẫn chạy như trước; node gọi `yt-dlp -U` theo lịch. Đổi thành `managed` để node tự quản lý yt-dlp.
-- Phần ghép YouTube cho Spotify/Apple Music/Deezer và phần live YouTube đã được test với API và yt-dlp giả lập; Deezer đã chạy thử với API thật.
+- Phần ghép YouTube cho Spotify/Apple Music/Deezer và phần live YouTube đã được test với API và yt-dlp giả lập; Deezer và link YouTube Mix đã chạy thử với dịch vụ thật.
