@@ -127,12 +127,23 @@ impl HttpSource {
 
     /// Audio bytes of `url`; HLS playlists are followed segment by segment.
     pub async fn open(&self, url: &str) -> Result<ByteStream, SourceError> {
+        self.open_with(url, header::HeaderMap::new()).await
+    }
+
+    /// [`Self::open`] with extra request headers (plugin URLs).
+    pub async fn open_with(&self, url: &str, headers: header::HeaderMap) -> Result<ByteStream, SourceError> {
         if let Ok(parsed) = Url::parse(url) {
             if hls::is_hls_url(&parsed) {
-                return Ok(hls::open(self.client.clone(), parsed, header::HeaderMap::new()));
+                return Ok(hls::open(self.client.clone(), parsed, headers));
             }
         }
-        let response = self.client.get(url).send().await?.error_for_status()?;
+        let response = self
+            .client
+            .get(url)
+            .headers(headers.clone())
+            .send()
+            .await?
+            .error_for_status()?;
         let is_hls = response
             .headers()
             .get(header::CONTENT_TYPE)
@@ -141,7 +152,7 @@ impl HttpSource {
         if is_hls {
             let final_url = response.url().clone();
             drop(response);
-            return Ok(hls::open(self.client.clone(), final_url, header::HeaderMap::new()));
+            return Ok(hls::open(self.client.clone(), final_url, headers));
         }
         let length = response.content_length();
         let stream = response.bytes_stream().map_err(io::Error::other);

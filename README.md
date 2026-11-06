@@ -39,6 +39,7 @@
 - **Voice Discord đời mới:** Voice Gateway v8, mã hóa `aead_aes256_gcm_rtpsize` hoặc `aead_xchacha20_poly1305_rtpsize`, mã hóa đầu cuối DAVE.
 - **Cache tiết kiệm băng thông:** phát ngay khi file còn đang tải, gộp các lượt tải trùng nhau, dọn LRU theo ngưỡng 90% và 80%, không xóa file đang phát.
 - **Backup OneDrive chịu lỗi:** upload chia chunk 320 KiB và tiếp tục được sau khi mất mạng hay khởi động lại, kiểm `quickXorHash`, snapshot SQLite bằng `VACUUM INTO`, tự kéo file về khi bài đã bị dọn khỏi đĩa.
+- **Plugin viết bằng ngôn ngữ nào cũng được:** plugin là chương trình riêng (Python, Node.js, Go...) nói chuyện với node qua JSON trên stdin/stdout. Plugin thêm được nguồn nhạc (tiền tố, URL), chọn nơi phát (URL, file, bài khác), nhận sự kiện websocket, thêm route REST và gọi lại REST của node. Node tự chạy lại plugin bị crash; `rust-link plugin new <tên>` tạo sẵn khung kèm SDK. Xem [docs/PLUGINS.md](docs/PLUGINS.md).
 - **Dùng lại cấu hình cũ:** đọc được nguyên file `application.yml` của Lavalink v4.
 
 ## 🧭 Kiến trúc
@@ -56,6 +57,9 @@ flowchart LR
     Cache -- "cold" --> OneDrive[("OneDrive<br/>AudioCache/")]
     Cache -- "miss" --> Sources["source/<br/>yt-dlp, HTTP"]
     Mirror["source/mirror<br/>Spotify, Apple Music, Deezer"] -- "ISRC / tên bài" --> Sources
+    Plugins["plugin/<br/>tiến trình Python, Node..."] -- "loadItem, resolve" --- Sources
+    API -- "route của plugin" --> Plugins
+    Player -. "sự kiện" .-> Plugins
     Playback -- "Spotify, Apple, Deezer" --> Mirror
     Sources --> Disk
     OneDrive --> Disk
@@ -243,6 +247,9 @@ Node tìm file cấu hình theo thứ tự: `--config`, `application.yml` hoặc
 | `onedrive.enabled` | `false` | Bật backup OneDrive |
 | `onedrive.remoteFolder` | `AudioCache` | Thư mục trên OneDrive |
 | `onedrive.chunkSize` | `10MiB` | Kích thước chunk upload, làm tròn xuống bội số 320 KiB |
+| `plugins.directory` | `./plugins` | Thư mục plugin, mỗi thư mục con có `plugin.yml` là một plugin |
+| `plugins.<tên>` | trống | Cấu hình riêng gửi cho plugin cùng tên |
+| `plugins.requestTimeoutSecs` | `10` | Thời gian tối đa cho một lần gọi plugin |
 | `logging.file.path` | `./logs/` | Ghi thêm log ra file xoay vòng theo ngày |
 
 <details>
@@ -287,6 +294,9 @@ Endpoint mở rộng cho vận hành:
 | GET | `/v4/rustlink/cache` | Thống kê cache và backup |
 | POST | `/v4/rustlink/cache/evict` | Chạy ngay một lượt LRU |
 | POST | `/v4/rustlink/cache/sync` | Kích hoạt đồng bộ OneDrive |
+| GET | `/v4/rustlink/plugins` | Trạng thái và khả năng của từng plugin |
+
+Plugin có thể thêm tiền tố identifier và route REST riêng, ví dụ `radio:lofi` và `GET /v4/radio/stations` của plugin mẫu.
 
 </details>
 
@@ -295,7 +305,7 @@ Endpoint mở rộng cho vận hành:
 ```text
 .
 ├── src/
-│   ├── main.rs              # CLI: serve | onedrive-login | check-config
+│   ├── main.rs              # CLI: serve | onedrive-login | check-config | update-ytdlp | plugin new/list
 │   ├── config.rs            # application.yml, khóa tương thích Lavalink, biến môi trường
 │   ├── node.rs, stats.rs    # khởi tạo node, số liệu op "stats"
 │   ├── api/                 # REST + WebSocket Lavalink v4, định dạng lỗi, codec track Lavaplayer
@@ -310,6 +320,7 @@ Endpoint mở rộng cho vận hành:
 │   │   └── dave.rs          # mã hóa đầu cuối DAVE
 │   ├── cache/               # chỉ mục SQLite, hit/cold/miss, phát thẳng, worker LRU
 │   ├── onedrive/            # OAuth2, Graph API, upload session, QuickXorHash, worker backup
+│   ├── plugin/              # chạy plugin (JSON-RPC qua stdin/stdout), tự chạy lại, route, sự kiện
 │   └── source/
 │       ├── mod.rs           # loadtracks, chọn nguồn, phát thẳng (open_direct), ghép mirror
 │       ├── ytdlp.rs         # gọi yt-dlp; ytdlp_update.rs: tự tải và cập nhật yt-dlp
@@ -317,10 +328,13 @@ Endpoint mở rộng cho vận hành:
 │       ├── hls.rs, mpegts.rs # HLS (live, .m3u8) và tách audio MPEG-TS
 │       ├── remote.rs        # đọc HTTP Range cho bài phát thẳng
 │       └── mirror/          # Spotify, Apple Music, Deezer kiểu LavaSrc
-├── tests/                   # test tích hợp: mock Discord voice, Microsoft Graph, Spotify/Apple/Deezer, HLS
+├── sdk/                     # SDK plugin Python và Node.js, mẫu cho `rust-link plugin new`
+├── examples/plugins/        # plugin mẫu: radio (Python), local-files (Node.js)
+├── tests/                   # test tích hợp: mock Discord voice, Microsoft Graph, Spotify/Apple/Deezer, HLS, plugin
 ├── migrations/              # schema SQLite (nhúng vào file chạy)
 ├── config/application.yml   # cấu hình mẫu có chú thích
 ├── docs/HUONG_DAN.md        # hướng dẫn triển khai và đấu nối bot
+├── docs/PLUGINS.md          # viết plugin: SDK, giao thức, vòng đời
 ├── packaging/               # start.bat, unit systemd, Dockerfile.release, mẫu ghi chú phát hành
 ├── scripts/package.sh       # đóng gói tar.gz (Linux x86_64, ARM64) và zip (Windows)
 ├── Dockerfile, docker-compose.yml
@@ -346,8 +360,10 @@ Endpoint mở rộng cho vận hành:
 - [x] Filter và âm lượng có hiệu lực ngay, không chờ bộ đệm
 - [x] Cache kết quả tìm kiếm, tải trước playlist, live stream dùng chung, yt-dlp bản thư mục
 - [ ] Script đo so sánh CPU, RAM, độ trễ với Lavalink
+- [x] Plugin ngoài tiến trình, viết bằng ngôn ngữ bất kỳ (nguồn nhạc, route, sự kiện)
+- [ ] Plugin xử lý âm thanh (`pluginFilters`)
 
-Hiện `pluginFilters` chỉ được lưu và trả lại, vì rust-link không chạy plugin JVM của Lavalink.
+Hiện `pluginFilters` chỉ được lưu và trả lại: rust-link không chạy plugin JVM của Lavalink, và plugin của rust-link chưa xử lý âm thanh trực tiếp.
 
 ### Quy chuẩn commit
 

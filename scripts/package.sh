@@ -54,6 +54,9 @@ grep -q 'directory: ./data/cache' "$STAGE/application.yml" || { echo "cache path
 
 cp config/onedrive.example.json "$STAGE/onedrive.example.json"
 cp docs/HUONG_DAN.md "$STAGE/HUONG_DAN.md"
+cp docs/PLUGINS.md "$STAGE/PLUGINS.md"
+mkdir -p "$STAGE/examples"
+cp -R examples/plugins "$STAGE/examples/plugins"
 cp README.md "$STAGE/README.md"
 cp LICENSE "$STAGE/LICENSE"
 case "$PLATFORM" in

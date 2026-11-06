@@ -14,7 +14,7 @@ use super::{
     track_codec, ApiError, AppState,
 };
 
-const LAVALINK_API_VERSION: &str = "4.1.1";
+pub const LAVALINK_API_VERSION: &str = "4.1.1";
 
 pub async fn version() -> &'static str {
     LAVALINK_API_VERSION
@@ -41,11 +41,18 @@ pub async fn info(State(ctx): State<AppState>) -> Json<Info> {
         lavaplayer: concat!("rust-link ", env!("CARGO_PKG_VERSION")).into(),
         source_managers: ctx.sources.source_names(),
         filters: ctx.config.lavalink.filters.enabled_names(),
-        plugins: vec![Plugin {
+        plugins: std::iter::once(Plugin {
             name: "rust-link-cache".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-        }],
+        })
+        .chain(ctx.plugins.info_list())
+        .collect(),
     })
+}
+
+/// State and capabilities of every configured plugin.
+pub async fn plugin_status(State(ctx): State<AppState>) -> Json<Value> {
+    Json(ctx.plugins.status())
 }
 
 pub async fn stats(State(ctx): State<AppState>) -> Json<Stats> {

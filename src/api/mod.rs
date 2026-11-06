@@ -3,6 +3,7 @@
 pub mod info_routes;
 pub mod models;
 pub mod player_routes;
+pub mod plugin_routes;
 pub mod track_codec;
 pub mod websocket;
 
@@ -106,10 +107,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-async fn not_found() -> ApiError {
-    ApiError::not_found("Not Found")
-}
-
 pub fn router(ctx: AppState) -> Router {
     Router::new()
         .route("/version", get(info_routes::version))
@@ -130,7 +127,8 @@ pub fn router(ctx: AppState) -> Router {
         .route("/v4/rustlink/cache", get(info_routes::cache_summary))
         .route("/v4/rustlink/cache/evict", post(info_routes::cache_evict))
         .route("/v4/rustlink/cache/sync", post(info_routes::cache_sync))
-        .fallback(not_found)
+        .route("/v4/rustlink/plugins", get(info_routes::plugin_status))
+        .fallback(plugin_routes::fallback)
         .layer(middleware::from_fn_with_state(Arc::clone(&ctx), auth_layer))
         .layer(middleware::from_fn(error_path_layer))
         .layer(TraceLayer::new_for_http())

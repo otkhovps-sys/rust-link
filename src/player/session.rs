@@ -15,6 +15,7 @@ use super::Player;
 use crate::{
     api::models::{OutgoingMessage, SessionInfo, UpdateSession},
     node::NodeContext,
+    plugin::PluginHost,
     util::random_session_id,
 };
 
@@ -35,6 +36,7 @@ pub struct Session {
     timeout_secs: AtomicU64,
     link: Mutex<Link>,
     backlog_limit: usize,
+    plugins: Option<Arc<PluginHost>>,
 }
 
 impl Session {
@@ -67,6 +69,9 @@ impl Session {
 
     /// Serialize and deliver a message; buffered while a resumable session is detached.
     pub fn send(&self, message: &OutgoingMessage) {
+        if let Some(plugins) = &self.plugins {
+            plugins.dispatch(&self.id, message);
+        }
         let Ok(json) = serde_json::to_string(message) else {
             return;
         };
@@ -151,9 +156,22 @@ impl Session {
 #[derive(Default)]
 pub struct SessionManager {
     sessions: DashMap<String, Arc<Session>>,
+    plugins: Option<Arc<PluginHost>>,
 }
 
 impl SessionManager {
+    /// Sessions whose websocket messages are also forwarded to plugins.
+    pub fn new(plugins: Arc<PluginHost>) -> Self {
+        Self {
+            sessions: DashMap::new(),
+            plugins: (!plugins.is_empty()).then_some(plugins),
+        }
+    }
+
+    pub fn plugins(&self) -> Option<&Arc<PluginHost>> {
+        self.plugins.as_ref()
+    }
+
     pub fn create(&self, user_id: u64, client_name: String, backlog_limit: usize) -> Arc<Session> {
         loop {
             let id = random_session_id();
@@ -173,6 +191,7 @@ impl SessionManager {
                     generation: 0,
                 }),
                 backlog_limit: backlog_limit.max(1),
+                plugins: self.plugins.clone(),
             });
             self.sessions.insert(id, Arc::clone(&session));
             return session;

@@ -122,7 +122,7 @@ impl CacheManager {
         // Spotify / Apple Music / Deezer tracks play from their matched YouTube video.
         let resolved = self.sources.resolve_mirror(info).await?;
         let info = &resolved;
-        if info.is_stream || !self.cfg.enabled {
+        if info.is_stream || !self.cfg.enabled || self.sources.bypasses_cache(info) {
             return self.direct(info).await;
         }
 
@@ -192,6 +192,7 @@ impl CacheManager {
         let source = match self.sources.open_direct(info).await? {
             DirectSource::Seekable { reader, container } => PlayableSource::Remote { reader, container },
             DirectSource::Stream(stream) => PlayableSource::Stream(stream),
+            DirectSource::File { path, container } => PlayableSource::File { path, container },
         };
         Ok(AcquiredSource {
             source,
@@ -284,7 +285,7 @@ impl CacheManager {
     }
 
     async fn prefetch_one(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<()> {
-        if info.is_stream {
+        if info.is_stream || self.sources.bypasses_cache(info) {
             return Ok(());
         }
         let resolved = self.sources.resolve_mirror(info).await?;

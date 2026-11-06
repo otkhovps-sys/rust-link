@@ -8,6 +8,7 @@ pub mod config;
 pub mod node;
 pub mod onedrive;
 pub mod player;
+pub mod plugin;
 pub mod source;
 pub mod stats;
 pub mod util;

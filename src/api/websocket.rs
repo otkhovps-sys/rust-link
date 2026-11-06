@@ -56,6 +56,7 @@ async fn handle_socket(socket: WebSocket, ctx: AppState, session: Arc<Session>, 
         session_id: session.id.clone(),
     };
     let _ = tx.send(serde_json::to_string(&ready).unwrap_or_default());
+    ctx.plugins.dispatch(&session.id, &ready);
     session.attach(tx.clone());
     // Initial stats so load balancing clients get numbers right away.
     let _ = tx.send(serde_json::to_string(&OutgoingMessage::Stats(ctx.stats(None))).unwrap_or_default());

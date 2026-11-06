@@ -14,6 +14,7 @@ use crate::{
     config::AppConfig,
     onedrive::{auth::TokenManager, sync_worker, OneDriveClient, SyncWorker},
     player::SessionManager,
+    plugin::PluginHost,
     source::SourceManager,
     stats::SystemSampler,
 };
@@ -26,6 +27,8 @@ pub struct NodeContext {
     pub frames: Arc<FrameCounters>,
     /// Shared live streams (`audio.shareLiveStreams`).
     pub live: Option<Arc<crate::audio::live::LiveHub>>,
+    /// External plugin processes.
+    pub plugins: Arc<PluginHost>,
     pub system: SystemSampler,
     pub started_at: Instant,
     pub shutdown: CancellationToken,
@@ -116,7 +119,10 @@ pub async fn build(config: AppConfig, shutdown: CancellationToken) -> anyhow::Re
         warn!(error = %format!("{e:#}"), "cannot install the managed yt-dlp; YouTube and search will fail until it is available");
     }
     crate::source::ytdlp_update::spawn_auto_update(config.sources.ytdlp.clone(), shutdown.clone());
-    let sources = Arc::new(SourceManager::new(&config.sources, Some(index.clone()))?);
+    let plugins = PluginHost::from_config(&config)?;
+    plugins.start(shutdown.clone()).await;
+    let sources =
+        Arc::new(SourceManager::new(&config.sources, Some(index.clone()))?.with_plugins(Arc::clone(&plugins)));
     let cache = CacheManager::new(cache_cfg.clone(), index, Arc::clone(&sources), onedrive.clone());
     cache.reconcile().await?;
 
@@ -124,16 +130,18 @@ pub async fn build(config: AppConfig, shutdown: CancellationToken) -> anyhow::Re
         config: Arc::clone(&config),
         cache: Arc::clone(&cache),
         sources,
-        sessions: SessionManager::default(),
+        sessions: SessionManager::new(Arc::clone(&plugins)),
         frames: Arc::new(FrameCounters::default()),
         live: config
             .audio
             .share_live_streams
             .then(|| Arc::new(crate::audio::live::LiveHub::default())),
+        plugins: Arc::clone(&plugins),
         system: SystemSampler::default(),
         started_at: Instant::now(),
         shutdown: shutdown.clone(),
     });
+    plugins.attach_node(&ctx);
 
     tokio::spawn(lru::run_lru_worker(Arc::clone(&cache), shutdown.clone()));
     if let Some(client) = onedrive {

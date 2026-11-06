@@ -1,0 +1,4 @@
+# Audio files from a folder on the server: `local:artist song` searches file names.
+# Copy this folder into plugins/ and set `plugins.local-files.folder` in application.yml.
+name: local-files
+command: ["node", "main.js"]

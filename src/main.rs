@@ -44,6 +44,24 @@ enum Command {
     CheckConfig,
     /// Update yt-dlp now (managed download, or `yt-dlp -U`) and exit.
     UpdateYtdlp,
+    /// Create or list plugins.
+    Plugin {
+        #[command(subcommand)]
+        action: PluginCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Create `plugins/<name>/` with a starter plugin and the SDK.
+    New {
+        name: String,
+        /// `python` or `node`.
+        #[arg(long, default_value = "python", value_parser = ["python", "node"])]
+        lang: String,
+    },
+    /// Show the plugins the configuration would start.
+    List,
 }
 
 #[tokio::main]
@@ -65,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{outcome}");
             Ok(())
         }
+        Command::Plugin { action } => plugin_command(&config, action),
         Command::CheckConfig => {
             println!("{config:#?}");
             println!("configuration OK");
@@ -90,6 +109,43 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn plugin_command(config: &AppConfig, action: PluginCommand) -> anyhow::Result<()> {
+    use rust_link::plugin;
+    match action {
+        PluginCommand::New { name, lang } => {
+            let language = if lang == "node" {
+                plugin::Language::Node
+            } else {
+                plugin::Language::Python
+            };
+            let dir = plugin::scaffold(&config.plugins.directory, &name, language)?;
+            println!("plugin created in {}", dir.display());
+            println!("restart rust-link to start it; GET /v4/rustlink/plugins shows its state");
+        }
+        PluginCommand::List => {
+            let specs = plugin::definitions(&config.plugins)?;
+            if !config.plugins.enabled {
+                println!("plugins are disabled (plugins.enabled: false)");
+            }
+            if specs.is_empty() {
+                println!(
+                    "no plugins in {} or plugins.entries",
+                    config.plugins.directory.display()
+                );
+            }
+            for spec in specs {
+                println!(
+                    "{:<20} {:?} (in {})",
+                    spec.name,
+                    spec.command,
+                    spec.working_dir.display()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Console logging, plus daily rotated files when `logging.file.path` is set (Lavalink style).

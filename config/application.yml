@@ -110,6 +110,25 @@ onedrive:
   maxSyncAttempts: 12
   requestTimeoutSecs: 120
 
+# Plugin: chương trình riêng (Python, Node.js, Go... tùy ý) mở rộng node: thêm nguồn nhạc,
+# route REST, nhận sự kiện. Mỗi thư mục con của `directory` có file plugin.yml sẽ được chạy.
+# Tạo plugin mới: rust-link plugin new <tên> [--lang node]. Hướng dẫn: docs/PLUGINS.md
+plugins:
+  enabled: true
+  directory: ./plugins
+  requestTimeoutSecs: 10         # thời gian tối đa cho một lần gọi plugin (load bài, resolve, route)
+  startupTimeoutSecs: 15         # thời gian tối đa để plugin trả lời initialize khi khởi động
+  # Khai báo thêm plugin ngay tại đây thay cho plugin.yml:
+  # entries:
+  #   - name: lyrics
+  #     command: ["python3", "main.py"]
+  #     workingDir: /opt/lyrics-plugin
+  #     env: { LYRICS_TOKEN: "..." }
+  # Cấu hình riêng cho từng plugin: plugins.<tên>, giống khối plugins: của Lavalink.
+  # radio:
+  #   stations:
+  #     lofi: { title: "Lofi radio", url: "https://radio.example/lofi.mp3" }
+
 logging:
   level: info                    # hoặc dạng Lavalink: { root: INFO, lavalink: INFO }; RUST_LOG được ưu tiên hơn
   file:

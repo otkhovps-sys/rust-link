@@ -399,3 +399,13 @@ Lệnh đầu trả về `4.1.1`. Lệnh thứ hai trả về JSON có `"loadTyp
 ```
 
 Chi tiết về cơ chế cache, backup và khôi phục nằm trong `README.md`.
+
+## 14. Plugin
+
+Plugin là chương trình riêng (Python, Node.js hay ngôn ngữ khác) mở rộng node: thêm nguồn nhạc, route REST, nhận sự kiện của player. Tạo khung plugin bằng:
+
+```bash
+./rust-link plugin new ten-plugin
+```
+
+Khởi động lại node, plugin trong thư mục `plugins/` sẽ tự chạy. Gói phát hành có hai plugin mẫu trong `examples/plugins/` (radio bằng Python, phát file nhạc trên máy chủ bằng Node.js). Hướng dẫn đầy đủ, gồm SDK và giao thức: [PLUGINS.md](PLUGINS.md).

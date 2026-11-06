@@ -19,7 +19,7 @@ use std::{
 };
 
 use bytes::{Buf, Bytes};
-use futures_util::{future::BoxFuture, stream::BoxStream, StreamExt};
+use futures_util::{future::BoxFuture, stream::BoxStream, StreamExt, TryStreamExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 use url::Url;
@@ -31,6 +31,7 @@ use crate::{
     },
     cache::CacheIndex,
     config::SourcesConfig,
+    plugin::{PlayTarget, PluginHost},
 };
 
 use self::{
@@ -52,7 +53,15 @@ pub enum DirectSource {
     },
     /// Forward-only stream (HLS, radio, yt-dlp pipe).
     Stream(ByteStream),
+    /// Local file named by a plugin.
+    File {
+        path: std::path::PathBuf,
+        container: Option<String>,
+    },
 }
+
+/// How deep plugins may hand a track over to other tracks before playback gives up.
+const MAX_DELEGATION: u8 = 4;
 
 fn header_map(headers: &HashMap<String, String>) -> reqwest::header::HeaderMap {
     let mut map = reqwest::header::HeaderMap::new();
@@ -244,6 +253,7 @@ pub struct SourceManager {
     apple_music: Option<AppleMusicClient>,
     deezer: Option<DeezerClient>,
     load_cache_writes: AtomicU64,
+    plugins: Arc<PluginHost>,
 }
 
 /// Search prefixes whose results are worth caching.
@@ -315,7 +325,19 @@ impl SourceManager {
             cfg: cfg.clone(),
             index,
             load_cache_writes: AtomicU64::new(0),
+            plugins: PluginHost::disabled(),
         })
+    }
+
+    /// Route plugin search prefixes, URL patterns and tracks to `plugins`.
+    pub fn with_plugins(mut self, plugins: Arc<PluginHost>) -> Self {
+        self.plugins = plugins;
+        self
+    }
+
+    /// Tracks of `cache: false` plugins skip the audio cache.
+    pub fn bypasses_cache(&self, info: &TrackInfo) -> bool {
+        self.plugins.bypasses_cache(info)
     }
 
     fn spotify(&self) -> Result<Option<&SpotifyClient>, SourceError> {
@@ -355,6 +377,11 @@ impl SourceManager {
         if self.index.is_some() {
             names.push("cache".to_string());
         }
+        for name in self.plugins.source_names() {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
         names
     }
 
@@ -362,6 +389,10 @@ impl SourceManager {
         let identifier = identifier.trim();
         if identifier.is_empty() {
             return LoadResult::empty();
+        }
+        // Plugins first: they may claim prefixes and URLs the built-in sources know too.
+        if let Some(result) = self.plugins.load_item(identifier).await {
+            return result;
         }
         let ttl_ms = self.cfg.load_cache_ttl_secs.saturating_mul(1000).min(i64::MAX as u64) as i64;
         let cache = match (&self.index, load_cache_key(identifier)) {
@@ -672,9 +703,113 @@ impl SourceManager {
             .await
     }
 
+    /// Where a plugin track plays from: `None` for other tracks, and for plugin tracks
+    /// left to the node without an http(s) URI (yt-dlp is tried on the URI then).
+    async fn plugin_target(&self, info: &TrackInfo, depth: u8) -> anyhow::Result<Option<PlayTarget>> {
+        if !self.plugins.owns_source(&info.source_name) {
+            return Ok(None);
+        }
+        if depth >= MAX_DELEGATION {
+            anyhow::bail!("plugin tracks hand over to each other more than {MAX_DELEGATION} times");
+        }
+        let target = match self.plugins.resolve(info).await? {
+            Some(PlayTarget::Load(identifier)) => {
+                let track = self
+                    .load_first_track(&identifier)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{identifier}: {e}"))?;
+                Some(PlayTarget::Track(self.resolve_mirror(&track.info).await?))
+            }
+            Some(PlayTarget::Track(track)) => Some(PlayTarget::Track(self.resolve_mirror(&track).await?)),
+            Some(other) => Some(other),
+            None => info
+                .uri
+                .as_deref()
+                .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
+                .map(|uri| PlayTarget::Url {
+                    url: uri.to_string(),
+                    headers: HashMap::new(),
+                    format: None,
+                }),
+        };
+        if let Some(target) = &target {
+            debug!(source = %info.source_name, id = %info.identifier, ?target, "plugin playback target");
+        }
+        Ok(target)
+    }
+
     /// Play without caching: live streams (HLS when available) and tracks too large to
     /// cache (seekable HTTP ranges). Falls back to piping through yt-dlp.
     pub async fn open_direct(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<DirectSource> {
+        self.open_direct_at(info, 0).await
+    }
+
+    fn open_direct_at<'a>(
+        self: &'a Arc<Self>,
+        info: &'a TrackInfo,
+        depth: u8,
+    ) -> BoxFuture<'a, anyhow::Result<DirectSource>> {
+        Box::pin(async move {
+            match self.plugin_target(info, depth).await? {
+                Some(PlayTarget::Track(next)) => self.open_direct_at(&next, depth + 1).await,
+                Some(PlayTarget::File { path }) => Ok(DirectSource::File {
+                    container: file_container(&path),
+                    path,
+                }),
+                Some(PlayTarget::Url { url, headers, format }) => {
+                    self.open_plugin_url(info, url, headers, format).await
+                }
+                Some(PlayTarget::Load(_)) => unreachable!("loaded by plugin_target"),
+                None => self.open_direct_builtin(info).await,
+            }
+        })
+    }
+
+    /// Seekable ranges for files (the plugin is asked again when the URL expires), HLS and
+    /// plain streams otherwise.
+    async fn open_plugin_url(
+        self: &Arc<Self>,
+        info: &TrackInfo,
+        url: String,
+        headers: HashMap<String, String>,
+        format: Option<String>,
+    ) -> anyhow::Result<DirectSource> {
+        let client = self.http.client().clone();
+        let headers = header_map(&headers);
+        if let Ok(parsed) = Url::parse(&url) {
+            if hls::is_hls_url(&parsed) {
+                return Ok(DirectSource::Stream(hls::open(client, parsed, headers)));
+            }
+        }
+        if !info.is_stream {
+            let plugins = Arc::clone(&self.plugins);
+            let track = info.clone();
+            let refresh: UrlRefresher = Arc::new(move || {
+                let plugins = Arc::clone(&plugins);
+                let track = track.clone();
+                Box::pin(async move {
+                    match plugins.resolve(&track).await? {
+                        Some(PlayTarget::Url { url, .. }) => Ok(url),
+                        _ => anyhow::bail!("plugin no longer resolves {} to a URL", track.identifier),
+                    }
+                })
+            });
+            let media = RemoteMedia {
+                url: url.clone(),
+                headers: headers.clone(),
+                refresh: Some(refresh),
+            };
+            if let Some(reader) = RangedReader::open(client, media).await? {
+                return Ok(DirectSource::Seekable {
+                    reader,
+                    container: format,
+                });
+            }
+        }
+        Ok(DirectSource::Stream(self.http.open_with(&url, headers).await?))
+    }
+
+    async fn open_direct_builtin(self: &Arc<Self>, info: &TrackInfo) -> anyhow::Result<DirectSource> {
         let client = self.http.client().clone();
         if info.source_name == "http" {
             let target = info.uri.clone().unwrap_or_else(|| info.identifier.clone());
@@ -735,6 +870,31 @@ impl SourceManager {
 
     /// Raw bytes of the audio file behind a track.
     pub async fn open_stream(&self, info: &TrackInfo) -> anyhow::Result<ByteStream> {
+        self.open_stream_at(info, 0).await
+    }
+
+    fn open_stream_at<'a>(&'a self, info: &'a TrackInfo, depth: u8) -> BoxFuture<'a, anyhow::Result<ByteStream>> {
+        Box::pin(async move {
+            match self.plugin_target(info, depth).await? {
+                Some(PlayTarget::Track(next)) => self.open_stream_at(&next, depth + 1).await,
+                Some(PlayTarget::File { path }) => {
+                    let file = tokio::fs::File::open(&path)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("cannot open {}: {e}", path.display()))?;
+                    let length = file.metadata().await.ok().map(|m| m.len());
+                    let stream = tokio_util::io::ReaderStream::new(file).map_err(io::Error::other);
+                    Ok(ByteStream::new(Box::pin(stream), length))
+                }
+                Some(PlayTarget::Url { url, headers, .. }) => {
+                    Ok(self.http.open_with(&url, header_map(&headers)).await?)
+                }
+                Some(PlayTarget::Load(_)) => unreachable!("loaded by plugin_target"),
+                None => self.open_stream_builtin(info).await,
+            }
+        })
+    }
+
+    async fn open_stream_builtin(&self, info: &TrackInfo) -> anyhow::Result<ByteStream> {
         let target = info.uri.clone().unwrap_or_else(|| info.identifier.clone());
         match info.source_name.as_str() {
             "http" => Ok(self.http.open(&target).await?),
@@ -749,6 +909,14 @@ impl SourceManager {
             _ => Ok(self.ytdlp.download(&target)?),
         }
     }
+}
+
+/// Container hint from a file extension (`song.FLAC` → `flac`).
+fn file_container(path: &std::path::Path) -> Option<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .filter(|e| !e.is_empty())
 }
 
 /// The original track's metadata on the matched YouTube video.

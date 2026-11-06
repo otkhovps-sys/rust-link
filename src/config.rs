@@ -18,7 +18,91 @@ pub struct AppConfig {
     pub cache: CacheConfig,
     pub onedrive: OneDriveConfig,
     pub logging: LoggingConfig,
+    /// Plugin processes, plus `plugins.<name>` settings handed to each plugin (the same
+    /// layout as Lavalink's `plugins:` block).
+    pub plugins: PluginsConfig,
 }
+
+/// External plugin processes (any language) speaking JSON-RPC over stdin/stdout.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PluginsConfig {
+    pub enabled: bool,
+    /// Every sub-directory holding a `plugin.yml` is started.
+    pub directory: PathBuf,
+    /// Plugins defined here instead of (or in addition to) a `plugin.yml`.
+    pub entries: Vec<PluginEntry>,
+    /// Limit for one call to a plugin (track loading, resolving, routes).
+    pub request_timeout_secs: u64,
+    /// Limit for a plugin to answer `initialize` after it was started.
+    pub startup_timeout_secs: u64,
+    /// `plugins.<name>`: settings handed to the plugin of that name.
+    #[serde(flatten)]
+    pub settings: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl Default for PluginsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            directory: PathBuf::from("plugins"),
+            entries: Vec::new(),
+            request_timeout_secs: 10,
+            startup_timeout_secs: 15,
+            settings: Default::default(),
+        }
+    }
+}
+
+/// One plugin: a command line, run in `workingDir`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PluginEntry {
+    pub name: String,
+    /// Program and arguments, as a list or as one string split on whitespace.
+    #[serde(deserialize_with = "command_line")]
+    pub command: Vec<String>,
+    pub working_dir: Option<PathBuf>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub enabled: bool,
+    /// Settings for the plugin; replaces `plugins.<name>` when present.
+    pub config: Option<serde_json::Value>,
+}
+
+impl Default for PluginEntry {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            command: Vec::new(),
+            working_dir: None,
+            env: Default::default(),
+            enabled: true,
+            config: None,
+        }
+    }
+}
+
+fn command_line<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Line(String),
+        Parts(Vec<String>),
+    }
+    Ok(match Raw::deserialize(deserializer)? {
+        Raw::Line(line) => line.split_whitespace().map(str::to_string).collect(),
+        Raw::Parts(parts) => parts,
+    })
+}
+
+/// Keys of the `plugins:` block that configure the host rather than a plugin.
+pub const PLUGIN_HOST_KEYS: [&str; 5] = [
+    "enabled",
+    "directory",
+    "entries",
+    "requestTimeoutSecs",
+    "startupTimeoutSecs",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
