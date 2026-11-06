@@ -34,5 +34,6 @@ Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 ## Lưu ý
 
+- Nâng cấp từ 0.1.x: thay file chạy, giữ nguyên thư mục `data/`. Chỉ mục SQLite tự thêm các bảng mới khi khởi động; các khóa cấu hình mới đều có giá trị mặc định.
 - `application.yml` cũ có `sources.ytdlp.path: yt-dlp` vẫn chạy như trước; node gọi `yt-dlp -U` theo lịch. Đổi thành `managed` để node tự quản lý yt-dlp.
 - Phần ghép YouTube cho Spotify/Apple Music/Deezer và phần live YouTube đã được test với API và yt-dlp giả lập; Deezer đã chạy thử với API thật.
