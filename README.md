@@ -244,6 +244,7 @@ Node tìm file cấu hình theo thứ tự: `--config`, `application.yml` hoặc
 | `cache.maxTrackDurationSecs` | `7200` | Bài dài hơn phát thẳng từ nguồn, không lưu cache (0 = không giới hạn) |
 | `cache.prefetchTracks` | `3` | Số bài tải trước khi load playlist và khi phát một bài trong playlist (0 = tắt) |
 | `sources.loadCacheTtlSecs` | `21600` | Thời gian dùng lại kết quả tìm kiếm và link nhạc (0 = tắt) |
+| `sources.youtubeMixLimit` | `25` | Số bài lấy từ link YouTube Mix `list=RD...` (0 = chỉ phát video trong link) |
 | `onedrive.enabled` | `false` | Bật backup OneDrive |
 | `onedrive.remoteFolder` | `AudioCache` | Thư mục trên OneDrive |
 | `onedrive.chunkSize` | `10MiB` | Kích thước chunk upload, làm tròn xuống bội số 320 KiB |
@@ -285,7 +286,7 @@ Chuẩn Lavalink v4, mọi route yêu cầu header `Authorization`:
 | GET | `/v4/sessions/{sessionId}/players` |
 | GET, PATCH, DELETE | `/v4/sessions/{sessionId}/players/{guildId}` (PATCH hỗ trợ `?noReplace=true`) |
 
-Identifier hỗ trợ: `ytsearch:`, `ytmsearch:`, `scsearch:`, `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`, `cachesearch:` (tìm trong cache), URL YouTube (video, shorts, playlist, live), Spotify, Apple Music, Deezer, SoundCloud, file audio, radio HTTP và `.m3u8`, URL khác qua extractor của yt-dlp, và video ID YouTube 11 ký tự.
+Identifier hỗ trợ: `ytsearch:`, `ytmsearch:`, `scsearch:`, `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`, `cachesearch:` (tìm trong cache), URL YouTube (video, shorts, playlist, Mix, live), Spotify, Apple Music, Deezer, SoundCloud, file audio, radio HTTP và `.m3u8`, URL khác qua extractor của yt-dlp, và video ID YouTube 11 ký tự.
 
 Endpoint mở rộng cho vận hành:
 

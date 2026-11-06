@@ -79,6 +79,7 @@ sources:
     - 'ytsearch:"%ISRC%"'
     - 'ytsearch:%QUERY%'
   loadCacheTtlSecs: 21600        # kết quả tìm kiếm / link nhạc được dùng lại trong 6 giờ; 0 = tắt
+  youtubeMixLimit: 25            # số bài lấy từ link YouTube Mix (list=RD...); 0 = chỉ phát video trong link
 
 cache:
   enabled: true

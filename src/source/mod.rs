@@ -562,8 +562,8 @@ impl SourceManager {
     async fn load_youtube_url(&self, url: &Url) -> Result<LoadResult, SourceError> {
         let (video, list) = youtube_ids(url);
         match (video, list) {
-            // Radio/mix playlists ("RD...") are endless: play the requested video only.
-            (Some(video), Some(list)) if list.starts_with("RD") => self.load_youtube_video(&video).await,
+            // Mixes ("RD...", also YouTube Music radios) never end: load a limited number.
+            (video, Some(list)) if list.starts_with("RD") => self.load_youtube_mix(video.as_deref(), &list).await,
             (video, Some(list)) => {
                 let playlist_url = format!("https://www.youtube.com/playlist?list={list}");
                 let result = self.resolve_with_ytdlp(&playlist_url, -1).await?;
@@ -582,6 +582,53 @@ impl SourceManager {
             }
             (Some(video), None) => self.load_youtube_video(&video).await,
             (None, None) => self.resolve_with_ytdlp(url.as_str(), -1).await,
+        }
+    }
+
+    /// A YouTube Mix as a playlist of its first `youtubeMixLimit` tracks, with the linked
+    /// video selected. With the limit at 0, or when the mix cannot be read, the linked video
+    /// plays alone.
+    async fn load_youtube_mix(&self, video: Option<&str>, list: &str) -> Result<LoadResult, SourceError> {
+        // A mix id is usually "RD" + the video it starts from.
+        let seed = video
+            .map(str::to_string)
+            .or_else(|| Some(list[2..].to_string()).filter(|id| is_youtube_video_id(id)));
+        let limit = self.cfg.youtube_mix_limit;
+        if limit == 0 {
+            return match &seed {
+                Some(video) => self.load_youtube_video(video).await,
+                None => Ok(LoadResult::empty()),
+            };
+        }
+        let url = match video {
+            Some(video) => format!("https://www.youtube.com/watch?v={video}&list={list}"),
+            None => format!("https://www.youtube.com/playlist?list={list}"),
+        };
+        let error = match self.ytdlp.resolve_limited(&url, Some(limit)).await {
+            Ok(Resolved::Playlist { name, tracks }) if !tracks.is_empty() => {
+                let selected = seed
+                    .as_deref()
+                    .and_then(|id| tracks.iter().position(|t| t.identifier == id))
+                    .map_or(-1, |i| i as i32);
+                return Ok(LoadResult::Playlist(PlaylistData {
+                    info: PlaylistInfo {
+                        name,
+                        selected_track: selected,
+                    },
+                    plugin_info: Default::default(),
+                    tracks: tracks.into_iter().map(Track::new).collect(),
+                }));
+            }
+            Ok(Resolved::Track(info)) => return Ok(LoadResult::Track(Track::new(info))),
+            Ok(Resolved::Playlist { .. }) => SourceError::Unavailable(format!("YouTube mix {list} is empty")),
+            Err(e) => e,
+        };
+        match seed {
+            Some(video) => {
+                debug!(%list, error = %error, "mix unavailable, loading the linked video");
+                self.load_youtube_video(&video).await
+            }
+            None => Err(error),
         }
     }
 

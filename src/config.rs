@@ -263,6 +263,9 @@ pub struct SourcesConfig {
     /// Reuse `/v4/loadtracks` results of searches and music-service links for this long
     /// (0 = off). Skips yt-dlp and the remote APIs for repeated requests.
     pub load_cache_ttl_secs: u64,
+    /// Tracks loaded from a YouTube Mix link (`list=RD...`), which YouTube keeps extending
+    /// without end. 0 plays the linked video alone.
+    pub youtube_mix_limit: usize,
 }
 
 impl Default for SourcesConfig {
@@ -279,6 +282,7 @@ impl Default for SourcesConfig {
             deezer: DeezerConfig::default(),
             mirror_providers: vec!["ytsearch:\"%ISRC%\"".into(), "ytsearch:%QUERY%".into()],
             load_cache_ttl_secs: 6 * 3600,
+            youtube_mix_limit: 25,
         }
     }
 }

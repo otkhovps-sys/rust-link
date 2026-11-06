@@ -161,7 +161,17 @@ impl YtDlp {
     }
 
     pub async fn resolve(&self, url: &str) -> Result<Resolved, SourceError> {
-        let info = self.run_json(&["--flat-playlist", "--yes-playlist"], url).await?;
+        self.resolve_limited(url, None).await
+    }
+
+    /// [`Self::resolve`] keeping only the first `limit` playlist entries.
+    pub async fn resolve_limited(&self, url: &str, limit: Option<usize>) -> Result<Resolved, SourceError> {
+        let end = limit.map(|n| n.max(1).to_string());
+        let mut args = vec!["--flat-playlist", "--yes-playlist"];
+        if let Some(end) = &end {
+            args.extend(["--playlist-end", end.as_str()]);
+        }
+        let info = self.run_json(&args, url).await?;
         if info.kind.as_deref() == Some("playlist") || info.entries.is_some() {
             let name = info.title.clone().unwrap_or_else(|| "Unknown playlist".into());
             let fallback = source_name_of(&info, "ytdlp");
@@ -171,6 +181,7 @@ impl YtDlp {
                 .into_iter()
                 .flatten()
                 .filter_map(|e| to_track_info(&e, &fallback))
+                .take(limit.unwrap_or(usize::MAX))
                 .collect();
             return Ok(Resolved::Playlist { name, tracks });
         }
