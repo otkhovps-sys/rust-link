@@ -1,0 +1,152 @@
+name: Release
+
+# Publishes the Linux (x86_64, ARM64) and Windows packages as a GitHub release named after
+# the version in Cargo.toml (tag v<version>), then pushes a multi-arch Docker image to
+# ghcr.io. Trigger it by pushing that tag, or run it manually from the Actions tab
+# ("Run workflow"): the tag is then created on the selected commit.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: tag
+        name: Check tag and Cargo.toml version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          tag="v${version}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "${tag}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${tag}"
+            exit 1
+          fi
+          if gh release view "${tag}" > /dev/null 2>&1; then
+            echo "::error::release ${tag} already exists; bump the version in Cargo.toml"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+  test:
+    name: Test
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: cargo test --locked
+
+  package:
+    name: Package ${{ matrix.platform }}
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            target: x86_64-unknown-linux-musl
+            packages: musl-tools
+          - platform: linux-aarch64
+            target: aarch64-unknown-linux-musl
+            # cargo-zigbuild cross-compiles; qemu runs the smoke test.
+            packages: qemu-user-static
+            zig: true
+          - platform: windows-x86_64
+            target: x86_64-pc-windows-gnu
+            packages: mingw-w64 zip
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cmake ${{ matrix.packages }}
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install cargo-zigbuild
+        if: matrix.zig
+        run: |
+          python3 -m venv "${RUNNER_TEMP}/zig"
+          "${RUNNER_TEMP}/zig/bin/pip" install ziglang cargo-zigbuild
+          echo "${RUNNER_TEMP}/zig/bin" >> "${GITHUB_PATH}"
+      - name: Build and package
+        run: TARGET=${{ matrix.target }} scripts/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-link-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [prepare, test, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          sed "s/{{VERSION}}/${TAG#v}/g" packaging/release-notes.md > notes.md
+          ls -l dist
+          gh release create "${TAG}" dist/* \
+            --title "rust-link ${TAG}" \
+            --notes-file notes.md \
+            --target "${GITHUB_SHA}"
+
+  docker:
+    name: Docker image (amd64 + arm64)
+    needs: [prepare, release]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Extract the static Linux binaries
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          for pair in amd64:linux-x86_64 arm64:linux-aarch64; do
+            arch="${pair%%:*}"; platform="${pair#*:}"
+            mkdir -p "docker-bin/${arch}"
+            tar -xzf "dist/rust-link-${version}-${platform}.tar.gz" -C "docker-bin/${arch}" \
+              --strip-components=1 "rust-link-${version}-${platform}/rust-link"
+          done
+          file docker-bin/*/rust-link
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "${GITHUB_ENV}"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.prepare.outputs.tag }}
+            ${{ env.IMAGE }}:latest

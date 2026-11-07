@@ -1,0 +1,136 @@
+# rust-link: Audio Node tương thích Lavalink v4
+# Mọi khóa đều tùy chọn; giá trị bên dưới là mặc định khuyến nghị.
+# File application.yml của Lavalink v4 cũng dùng được: các khóa lavalink.server.* (password,
+# sources, playerUpdateInterval...) được đọc khi khóa tương ứng của rust-link vắng mặt.
+# Biến môi trường ghi đè: RUSTLINK_SERVER_PASSWORD (hoặc LAVALINK_SERVER_PASSWORD),
+# RUSTLINK_SERVER_PORT, RUSTLINK_SERVER_ADDRESS, RUSTLINK_CACHE_DIR.
+
+server:
+  address: 0.0.0.0
+  port: 2333
+  # Giá trị header "Authorization" mà client Lavalink phải gửi
+  password: "youshallnotpass"
+
+lavalink:
+  playerUpdateInterval: 5        # giây giữa các op "playerUpdate"
+  statsInterval: 60              # giây giữa các op "stats"
+  trackStuckThresholdMs: 10000   # không có frame trong khoảng này -> TrackStuckEvent
+  resumeBacklogSize: 1000        # số event giữ lại khi session đang chờ resume
+  # Filter client được phép dùng (Lavalink: lavalink.server.filters).
+  # Filter tắt ở đây sẽ bị từ chối với lỗi 400 khi client gửi lên.
+  filters:
+    volume: true
+    equalizer: true
+    karaoke: true
+    timescale: true
+    tremolo: true
+    vibrato: true
+    distortion: true
+    rotation: true
+    channelMix: true
+    lowPass: true
+
+audio:
+  opusBitrate: 128000
+  opusComplexity: 10
+  frameBufferMs: 400             # bộ đệm frame 20ms giữa decoder và UDP sender
+  opusPassthrough: true          # gửi thẳng gói Opus 48kHz stereo khi volume = 100 và không bật filter nào
+  encryptionMode: auto           # auto | aead_aes256_gcm_rtpsize | aead_xchacha20_poly1305_rtpsize
+  dave: true                     # hỗ trợ Discord E2EE (DAVE); cần client gửi voice.channelId
+  udpKeepaliveSecs: 5
+  shareLiveStreams: true         # nhiều server phát cùng một live stream (cùng filter, âm lượng) dùng chung một lần giải mã
+
+sources:
+  youtube: true
+  soundcloud: true
+  http: true                     # URL trực tiếp tới file audio / radio stream
+  ytdlpGeneric: true             # các URL khác: thử qua extractor của yt-dlp
+  httpTimeoutSecs: 20
+  ytdlp:
+    # managed: rust-link tự tải yt-dlp chính thức vào managedDir và tự cập nhật.
+    # Muốn dùng yt-dlp đã cài sẵn thì ghi đường dẫn, ví dụ: path: yt-dlp
+    path: managed
+    managedDir: ./bin
+    autoUpdate: true             # YouTube đổi liên tục, yt-dlp cũ là hỏng phát nhạc
+    updateIntervalHours: 24
+    format: "bestaudio[acodec=opus]/bestaudio/best"
+    searchLimit: 10
+    metadataTimeoutSecs: 30
+    extraArgs: []                # ví dụ: ["--cookies", "/config/cookies.txt"]
+  # Link Spotify / Apple Music / Deezer: lấy thông tin bài từ API của dịch vụ, lúc phát thì
+  # tìm bản tương ứng trên YouTube theo mirrorProviders (giống plugin LavaSrc của Lavalink).
+  spotify:
+    enabled: true
+    clientId: ""                 # tạo app miễn phí tại https://developer.spotify.com/dashboard
+    clientSecret: ""
+    countryCode: VN
+    playlistLoadLimit: 6         # số trang 100 bài lấy từ playlist
+    albumLoadLimit: 6            # số trang 50 bài lấy từ album
+  appleMusic:
+    enabled: true
+    mediaApiToken: ""            # MusicKit developer token từ tài khoản Apple Developer
+    countryCode: us
+    playlistLoadLimit: 6
+    albumLoadLimit: 6
+  deezer:
+    enabled: true                # API công khai, không cần tài khoản
+    playlistLoadLimit: 6
+  mirrorProviders:               # thử lần lượt, %ISRC% = mã ISRC, %QUERY% = "tên bài nghệ sĩ"
+    - 'ytsearch:"%ISRC%"'
+    - 'ytsearch:%QUERY%'
+  loadCacheTtlSecs: 21600        # kết quả tìm kiếm / link nhạc được dùng lại trong 6 giờ; 0 = tắt
+  youtubeMixLimit: 25            # số bài lấy từ link YouTube Mix (list=RD...); 0 = chỉ phát video trong link
+
+cache:
+  enabled: true
+  directory: /data/cache         # file lưu tại {directory}/{id_prefix}/{video_id}.opus
+  database: /data/cache/index.db
+  maxSize: 20GiB
+  highWatermark: 0.90            # vượt 90% maxSize -> bắt đầu dọn LRU
+  lowWatermark: 0.80             # dọn tới khi còn dưới 80%
+  lruIntervalSecs: 60
+  evictUnsynced: false           # false: không xóa file chưa backup lên OneDrive
+  progressivePlayback: true      # phát ngay trong lúc file còn đang tải
+  maxFileSize: 1GiB              # file lớn hơn (khi biết trước kích thước) sẽ phát thẳng, không lưu cache
+  maxTrackDurationSecs: 7200     # bài dài hơn 2 giờ phát thẳng từ nguồn (vẫn tua được); 0 = không giới hạn
+  prefetchTracks: 3              # load playlist hoặc phát bài trong playlist -> tải sẵn 3 bài kế tiếp; 0 = tắt
+  fileExtension: opus
+
+onedrive:
+  enabled: false
+  # Tạo file này bằng lệnh: rust-link onedrive-login --client-id <APP_ID>
+  credentialsFile: config/onedrive.json
+  remoteFolder: AudioCache       # /me/drive/root:/AudioCache/{filename}
+  syncIntervalSecs: 300
+  syncBatchSize: 25
+  maxConcurrentUploads: 2
+  chunkSize: 10MiB               # được làm tròn xuống bội số của 320 KiB
+  simpleUploadMax: 4MiB          # file nhỏ hơn: PUT một lần, không cần upload session
+  snapshotIntervalSecs: 3600     # chu kỳ backup snapshot SQLite
+  restoreIndexOnStartup: true    # mất DB cục bộ -> tải snapshot từ OneDrive về
+  maxSyncAttempts: 12
+  requestTimeoutSecs: 120
+
+# Plugin: chương trình riêng (Python, Node.js, Go... tùy ý) mở rộng node: thêm nguồn nhạc,
+# route REST, nhận sự kiện. Mỗi thư mục con của `directory` có file plugin.yml sẽ được chạy.
+# Tạo plugin mới: rust-link plugin new <tên> [--lang node]. Hướng dẫn: docs/PLUGINS.md
+plugins:
+  enabled: true
+  directory: ./plugins
+  requestTimeoutSecs: 10         # thời gian tối đa cho một lần gọi plugin (load bài, resolve, route)
+  startupTimeoutSecs: 15         # thời gian tối đa để plugin trả lời initialize khi khởi động
+  # Khai báo thêm plugin ngay tại đây thay cho plugin.yml:
+  # entries:
+  #   - name: lyrics
+  #     command: ["python3", "main.py"]
+  #     workingDir: /opt/lyrics-plugin
+  #     env: { LYRICS_TOKEN: "..." }
+  # Cấu hình riêng cho từng plugin: plugins.<tên>, giống khối plugins: của Lavalink.
+  # radio:
+  #   stations:
+  #     lofi: { title: "Lofi radio", url: "https://radio.example/lofi.mp3" }
+
+logging:
+  level: info                    # hoặc dạng Lavalink: { root: INFO, lavalink: INFO }; RUST_LOG được ưu tiên hơn
+  file:
+    path: ./logs/                # ghi thêm log ra file xoay vòng theo ngày, giống Lavalink; bỏ dòng này để tắt

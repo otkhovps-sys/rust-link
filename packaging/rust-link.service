@@ -1,0 +1,25 @@
+# systemd unit cho rust-link (tương tự cách chạy Lavalink bằng systemd).
+# Cài đặt:
+#   sudo useradd -r -d /opt/rust-link -s /usr/sbin/nologin rustlink
+#   sudo cp -r rust-link-<version>-linux-x86_64 /opt/rust-link && sudo chown -R rustlink: /opt/rust-link
+#   sudo cp /opt/rust-link/rust-link.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now rust-link
+#   journalctl -u rust-link -f
+[Unit]
+Description=rust-link (Lavalink v4 compatible audio node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rustlink
+Group=rustlink
+WorkingDirectory=/opt/rust-link
+ExecStart=/opt/rust-link/rust-link
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+# yt-dlp phải nằm trong PATH (mặc định của systemd đã gồm /usr/local/bin và /usr/bin)
+
+[Install]
+WantedBy=multi-user.target

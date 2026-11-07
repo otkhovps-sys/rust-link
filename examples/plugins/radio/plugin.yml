@@ -1,0 +1,5 @@
+# Internet radio by name: `radio:lofi`, `radio:` (every station), `radio:jazz` (search).
+# Copy this folder into plugins/ and list the stations under `plugins.radio` in
+# application.yml (see main.py).
+name: radio
+command: ["python3", "main.py"]

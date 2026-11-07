@@ -1,0 +1,19 @@
+services:
+  rust-link:
+    build: .
+    image: rust-link:latest
+    container_name: rust-link
+    restart: unless-stopped
+    environment:
+      # Ghi đè server.password trong application.yml
+      - RUSTLINK_SERVER_PASSWORD=youshallnotpass
+    volumes:
+      # Cache audio, chỉ mục SQLite và onedrive.json
+      - rust-link-data:/data
+      # Dùng application.yml riêng (nhớ để cache ở /data/cache và credentialsFile ở /data/onedrive.json):
+      # - ./application.yml:/opt/rust-link/application.yml:ro
+    ports:
+      - "2333:2333"
+
+volumes:
+  rust-link-data:
