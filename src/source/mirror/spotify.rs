@@ -1,10 +1,16 @@
 //! Spotify Web API (client credentials flow).
+//!
+//! Since the February 2026 Web API changes (applied to existing apps on 2026-03-09), apps in
+//! Development Mode get playlist entries only for playlists the signed-in user owns or
+//! collaborates on, artist top tracks are gone and searches return at most 10 results. A
+//! client credentials app has no user, so playlist links return metadata without tracks.
 
 use std::time::{Duration, Instant};
 
 use reqwest::StatusCode;
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tracing::debug;
 use url::Url;
 
 use super::{search_result, single, text, track_info, MirrorCollection, MirrorTrack};
@@ -116,9 +122,15 @@ impl SpotifyClient {
             let response = self.http.get(&url).bearer_auth(token).send().await?;
             match response.status() {
                 StatusCode::UNAUTHORIZED if attempt == 0 => continue,
-                StatusCode::NOT_FOUND => {
+                StatusCode::NOT_FOUND => return Err(SourceError::Unavailable(
+                    "Spotify: not found (private playlists and playlists made by Spotify cannot be read by API apps)"
+                        .into(),
+                )),
+                StatusCode::FORBIDDEN => {
                     return Err(SourceError::Unavailable(
-                        "Spotify: not found (playlists made by Spotify are not available to API apps)".into(),
+                        "Spotify refused the request (403): apps in Development Mode need the app owner to have \
+                         Spotify Premium, and some endpoints are closed to them since 2026"
+                            .into(),
                     ))
                 }
                 StatusCode::TOO_MANY_REQUESTS => {
@@ -155,19 +167,26 @@ impl SpotifyClient {
         if query.is_empty() {
             return Ok(LoadResult::empty());
         }
+        let tracks = self
+            .search_tracks(query, self.cfg.search_limit)
+            .await?
+            .iter()
+            .filter_map(|t| parse_track(t, None, None))
+            .collect();
+        Ok(search_result(tracks))
+    }
+
+    /// Raw track objects of a search; Development Mode apps get at most 10.
+    async fn search_tracks(&self, query: &str, limit: usize) -> Result<Vec<Value>, SourceError> {
         let mut url = Url::parse(&format!("{}/search", self.cfg.api_url.trim_end_matches('/')))
             .map_err(|e| SourceError::Parse(e.to_string()))?;
         url.query_pairs_mut()
             .append_pair("q", query)
             .append_pair("type", "track")
-            .append_pair("limit", &self.cfg.search_limit.clamp(1, 50).to_string())
+            .append_pair("limit", &limit.clamp(1, MAX_SEARCH_LIMIT).to_string())
             .append_pair("market", self.cfg.country_code.trim());
         let v = self.get(url.as_str()).await?;
-        let tracks = items(&v["tracks"])
-            .iter()
-            .filter_map(|t| parse_track(t, None, None))
-            .collect();
-        Ok(search_result(tracks))
+        Ok(items(&v["tracks"]).to_vec())
     }
 
     /// Follow `next` links of a paging object, up to `pages` pages in total.
@@ -209,18 +228,30 @@ impl SpotifyClient {
 
     async fn playlist(&self, id: &str) -> Result<LoadResult, SourceError> {
         let playlist = self.get(&format!("/playlists/{id}?{}", self.market())).await?;
+        let name = text(&playlist, "name").unwrap_or_else(|| "Unknown playlist".into());
+        let Some(entries) = playlist_entries(&playlist) else {
+            return Err(SourceError::Unavailable(format!(
+                "Spotify returned playlist \"{name}\" without its tracks: since March 2026 Spotify only gives \
+                 apps in Development Mode the tracks of playlists owned by the signed-in user. Track and \
+                 album links still work."
+            )));
+        };
         let mut tracks = Vec::new();
-        self.pages(&playlist["tracks"], self.cfg.playlist_load_limit, |item| {
-            tracks.extend(parse_track(&item["track"], None, None));
+        self.pages(entries, self.cfg.playlist_load_limit, |entry| {
+            tracks.extend(parse_track(entry_track(entry), None, None));
         })
         .await?;
+        let total = entries["total"].as_u64();
+        if tracks.is_empty() && total.unwrap_or(0) > 0 {
+            debug!(%id, ?total, "Spotify playlist entries without readable tracks");
+        }
         Ok(MirrorCollection {
             kind: "playlist",
-            name: text(&playlist, "name").unwrap_or_else(|| "Unknown playlist".into()),
+            name,
             url: text(&playlist["external_urls"], "spotify"),
             artwork_url: first_image(&playlist),
             author: text(&playlist["owner"], "display_name"),
-            total_tracks: playlist["tracks"]["total"].as_u64(),
+            total_tracks: total,
             tracks,
         }
         .into_load_result())
@@ -228,13 +259,33 @@ impl SpotifyClient {
 
     async fn artist(&self, id: &str) -> Result<LoadResult, SourceError> {
         let artist = self.get(&format!("/artists/{id}")).await?;
-        let top = self.get(&format!("/artists/{id}/top-tracks?{}", self.market())).await?;
         let artwork = first_image(&artist);
         let name = text(&artist, "name").unwrap_or_else(|| "Unknown artist".into());
-        let tracks = top["tracks"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        let top = match self.get(&format!("/artists/{id}/top-tracks?{}", self.market())).await {
+            Ok(top) => top["tracks"].as_array().cloned().unwrap_or_default(),
+            // Closed to Development Mode apps in 2026: the artist's most relevant search hits.
+            Err(e) => {
+                debug!(%id, error = %e, "artist top tracks unavailable, searching instead");
+                let found = self
+                    .search_tracks(&format!("artist:\"{}\"", name.replace('"', "")), MAX_SEARCH_LIMIT)
+                    .await?;
+                let by_artist: Vec<Value> = found
+                    .iter()
+                    .filter(|t| {
+                        t["artists"]
+                            .as_array()
+                            .is_some_and(|artists| artists.iter().any(|a| a["id"].as_str() == Some(id)))
+                    })
+                    .cloned()
+                    .collect();
+                if by_artist.is_empty() {
+                    found
+                } else {
+                    by_artist
+                }
+            }
+        };
+        let tracks = top
             .iter()
             .filter_map(|t| parse_track(t, None, artwork.clone()))
             .collect();
@@ -249,6 +300,27 @@ impl SpotifyClient {
         }
         .into_load_result())
     }
+}
+
+/// Largest search page Spotify gives apps in Development Mode.
+const MAX_SEARCH_LIMIT: usize = 10;
+
+/// Paging object of a playlist's entries: `items` since the 2026 API, `tracks` before. `None`
+/// when Spotify left the entries out (playlists of other users, for Development Mode apps).
+fn playlist_entries(playlist: &Value) -> Option<&Value> {
+    ["items", "tracks"]
+        .into_iter()
+        .map(|key| &playlist[key])
+        .find(|v| v.is_object() && v.get("items").is_some_and(Value::is_array))
+}
+
+/// Track of a playlist entry: `item` since the 2026 API, `track` before (now a boolean).
+fn entry_track(entry: &Value) -> &Value {
+    ["item", "track"]
+        .into_iter()
+        .map(|key| &entry[key])
+        .find(|v| v.is_object())
+        .unwrap_or(&Value::Null)
 }
 
 fn items(paging: &Value) -> &[Value] {
@@ -329,6 +401,21 @@ mod tests {
         );
         assert_eq!(parse_ref("https://open.spotify.com/episode/abc"), None);
         assert_eq!(parse_ref("https://example.com/track/abc"), None);
+    }
+
+    #[test]
+    fn reads_playlist_entries_before_and_after_2026() {
+        let old = serde_json::json!({"tracks": {"total": 1, "items": [{"track": {"id": "a", "type": "track"}}]}});
+        let entries = playlist_entries(&old).unwrap();
+        assert_eq!(entry_track(&entries["items"][0])["id"], "a");
+
+        let new = serde_json::json!({"items": {"total": 1, "items": [{"track": true, "item": {"id": "b", "type": "track"}}]}});
+        let entries = playlist_entries(&new).unwrap();
+        assert_eq!(entry_track(&entries["items"][0])["id"], "b");
+
+        // Playlists of other users, for Development Mode apps: metadata only.
+        assert!(playlist_entries(&serde_json::json!({"name": "x", "items": {"total": 30}})).is_none());
+        assert!(playlist_entries(&serde_json::json!({"name": "x"})).is_none());
     }
 
     #[test]

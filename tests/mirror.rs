@@ -13,7 +13,7 @@ use std::{
 };
 
 use axum::{
-    extract::{Path as UrlPath, State},
+    extract::{Path as UrlPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -76,6 +76,17 @@ async fn start_mock_apis(counters: Counters) -> String {
             "/spotify/api/playlists/{id}",
             get(|State(c): State<Counters>, UrlPath(id): UrlPath<String>| async move {
                 let base = c.base.lock().unwrap().clone();
+                // Web API since February 2026: entries under `items`, track under `item`.
+                if id == "NewFormat" {
+                    return Json(json!({"name": "Mới", "owner": {"display_name": "me"},
+                        "items": {"total": 2, "items": [{"track": true, "item": spotify_track("n1", "Ba", "ISRC3", 1000)}],
+                                  "next": format!("{base}/spotify/api/playlists/{id}/items?offset=1")}}));
+                }
+                // Another user's playlist, for a Development Mode app: metadata only.
+                if id == "OthersPlaylist" {
+                    return Json(json!({"name": "Nhạc suy", "owner": {"display_name": "someone"},
+                        "external_urls": {"spotify": "https://open.spotify.com/playlist/OthersPlaylist"}}));
+                }
                 Json(json!({"name": "Road Trip", "external_urls": {"spotify": "https://open.spotify.com/playlist/pl"},
                     "images": [{"url": "https://i.scdn.co/pl.jpg"}], "owner": {"display_name": "dj"},
                     "tracks": {"total": 3, "items": [
@@ -83,6 +94,23 @@ async fn start_mock_apis(counters: Counters) -> String {
                         {"track": {"id": null, "is_local": true, "type": "track", "name": "Local file"}}
                     ], "next": format!("{base}/spotify/api/playlists/{id}/tracks?offset=2")}}))
             }),
+        )
+        .route(
+            "/spotify/api/playlists/{id}/items",
+            get(|| async {
+                Json(json!({"items": [{"track": true, "item": spotify_track("n2", "Bốn", "ISRC4", 1000)}], "next": null}))
+            }),
+        )
+        .route(
+            "/spotify/api/artists/{id}",
+            get(|UrlPath(id): UrlPath<String>| async move {
+                Json(json!({"id": id, "name": "Test Artist", "images": [{"url": "https://i.scdn.co/artist.jpg"}]}))
+            }),
+        )
+        // Removed for Development Mode apps in 2026.
+        .route(
+            "/spotify/api/artists/{id}/top-tracks",
+            get(|| async { StatusCode::NOT_FOUND }),
         )
         .route(
             "/spotify/api/playlists/{id}/tracks",
@@ -102,9 +130,15 @@ async fn start_mock_apis(counters: Counters) -> String {
         )
         .route(
             "/spotify/api/search",
-            get(|| async {
+            get(|Query(query): Query<std::collections::HashMap<String, String>>| async move {
+                // Development Mode apps get at most 10 results since 2026; more is a 400.
+                let limit: usize = query.get("limit").and_then(|l| l.parse().ok()).unwrap_or(5);
+                if limit > 10 {
+                    return StatusCode::BAD_REQUEST.into_response();
+                }
                 Json(json!({"tracks": {"items": [spotify_track("q1", "Hit", "ISRCQ1", 1000),
                                                   spotify_track("q2", "Hit (Remix)", "ISRCQ2", 1000)]}}))
+                .into_response()
             }),
         )
         // Apple Music
@@ -187,6 +221,8 @@ async fn mirror_node(base: &str, ytdlp: &str) -> TestNode {
         c.sources.spotify.client_secret = "sp-secret".into();
         c.sources.spotify.api_url = format!("{base}/spotify/api");
         c.sources.spotify.accounts_url = format!("{base}/spotify/accounts");
+        // Above the 10 results Spotify allows since 2026: must be capped, not rejected.
+        c.sources.spotify.search_limit = 25;
         c.sources.apple_music.api_url = format!("{base}/apple/api");
         c.sources.apple_music.media_api_token = APPLE_TOKEN.into();
         c.sources.deezer.api_url = format!("{base}/deezer");
@@ -258,6 +294,32 @@ async fn loads_spotify_apple_music_and_deezer_links() {
         .map(|t| t["info"]["title"].as_str().unwrap())
         .collect();
     assert_eq!(titles, ["One", "Two"]);
+
+    // The February 2026 format (`items` / `item`), pages included.
+    let fresh = load(&node, "https://open.spotify.com/playlist/NewFormat?si=x").await;
+    assert_eq!(fresh["loadType"], "playlist", "{fresh}");
+    let titles: Vec<&str> = fresh["data"]["tracks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["info"]["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["Ba", "Bốn"]);
+
+    // Playlists Spotify returns without entries are explained instead of looking empty.
+    let hidden = load(&node, "https://open.spotify.com/playlist/OthersPlaylist").await;
+    assert_eq!(hidden["loadType"], "error", "{hidden}");
+    let message = hidden["data"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("Nhạc suy") && message.contains("Development Mode"),
+        "{message}"
+    );
+
+    // Artist links without the removed top-tracks endpoint: search results instead.
+    let artist = load(&node, "https://open.spotify.com/artist/0gxyHStUsqpMadRV0Di1Qt").await;
+    assert_eq!(artist["loadType"], "playlist", "{artist}");
+    assert_eq!(artist["data"]["info"]["name"], "Test Artist's Top Tracks");
+    assert_eq!(artist["data"]["tracks"].as_array().unwrap().len(), 2);
 
     // Simplified album tracks take the album artwork.
     let album = load(&node, "https://open.spotify.com/album/6N9PS4QXF1D0OWPk0Sxtb4").await;

@@ -334,7 +334,16 @@ Hỗ trợ: track, album, playlist, top tracks của nghệ sĩ, link `open.spot
 2. Chép **Client ID** và **Client secret** vào `sources.spotify.clientId` và `clientSecret`.
 3. Khởi động lại node. `/v4/info` sẽ có `spotify` trong `sourceManagers`.
 
-Từ cuối 2024, Spotify không cho app mới đọc các playlist do chính Spotify tạo (ví dụ "Today's Top Hits"); các link đó trả lỗi "not found". Playlist do người dùng tạo vẫn đọc được.
+Giới hạn phía Spotify với app ở **Development Mode** (mọi app tự tạo trên dashboard đều ở chế độ này; Extended Quota chỉ cấp cho doanh nghiệp):
+
+| Link | Từ ngày 9/3/2026 |
+|---|---|
+| Bài (`/track/...`), `spsearch:` | Dùng được. Tìm kiếm trả tối đa 10 kết quả |
+| Album (`/album/...`) | Dùng được |
+| Nghệ sĩ (`/artist/...`) | Spotify bỏ API top tracks; node thay bằng 10 bài tìm được theo tên nghệ sĩ |
+| Playlist (`/playlist/...`) | **Không đọc được danh sách bài.** Spotify chỉ trả bài của playlist thuộc người dùng đã đăng nhập, còn node đọc Spotify không qua tài khoản người dùng. Node trả lỗi ghi rõ lý do thay vì kết quả rỗng |
+
+Ngoài ra, app ở Development Mode chỉ chạy khi chủ app có Spotify Premium, và Spotify không cho app mới đọc playlist do chính Spotify tạo (ví dụ "Today's Top Hits"). Muốn phát playlist, dùng link playlist YouTube, YouTube Music hoặc Deezer (Deezer không cần cấu hình).
 
 **Apple Music:** cần developer token MusicKit, tạo trong tài khoản Apple Developer (có phí hằng năm). Điền token vào `sources.appleMusic.mediaApiToken`. Token hết hạn tối đa sau 6 tháng, cần tạo lại.
 
