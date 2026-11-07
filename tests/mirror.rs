@@ -5,6 +5,7 @@
 mod common;
 
 use std::{
+    collections::HashMap,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -13,7 +14,7 @@ use std::{
 };
 
 use axum::{
-    extract::{Path as UrlPath, Query, State},
+    extract::{Form, Path as UrlPath, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -35,6 +36,7 @@ struct Counters {
 }
 
 const APPLE_TOKEN: &str = "apple-developer-token";
+const REDIRECT: &str = "http://127.0.0.1:8888/callback";
 
 fn spotify_track(id: &str, name: &str, isrc: &str, duration: u64) -> Value {
     json!({"id": id, "type": "track", "name": name, "duration_ms": duration,
@@ -54,19 +56,44 @@ async fn start_mock_apis(counters: Counters) -> String {
         // Spotify
         .route(
             "/spotify/accounts/api/token",
-            post(|State(c): State<Counters>, headers: HeaderMap| async move {
-                c.spotify_tokens.fetch_add(1, Ordering::SeqCst);
+            post(|State(c): State<Counters>, headers: HeaderMap, Form(form): Form<HashMap<String, String>>| async move {
                 let basic = format!("Basic {}", base64::engine::general_purpose::STANDARD.encode("sp-id:sp-secret"));
                 if !authorized(&headers, &basic) {
                     return StatusCode::UNAUTHORIZED.into_response();
                 }
-                Json(json!({"access_token": "sp-token", "token_type": "Bearer", "expires_in": 3600})).into_response()
+                let field = |k: &str| form.get(k).map(String::as_str).unwrap_or_default();
+                let refused = (StatusCode::BAD_REQUEST, Json(json!({"error": "invalid_grant", "error_description": "Invalid refresh token"})));
+                match field("grant_type") {
+                    "client_credentials" => {
+                        c.spotify_tokens.fetch_add(1, Ordering::SeqCst);
+                        Json(json!({"access_token": "sp-token", "token_type": "Bearer", "expires_in": 3600})).into_response()
+                    }
+                    // `rust-link spotify-login`: the code from the consent page.
+                    "authorization_code" if field("code") == "good-code" && field("redirect_uri") == REDIRECT => {
+                        Json(json!({"access_token": "user-token", "refresh_token": "rt-1", "expires_in": 3600,
+                            "scope": "playlist-read-private playlist-read-collaborative"})).into_response()
+                    }
+                    // Spotify may rotate the refresh token.
+                    "refresh_token" if matches!(field("refresh_token"), "rt-1" | "rt-2") => {
+                        Json(json!({"access_token": "user-token", "refresh_token": "rt-2", "expires_in": 3600})).into_response()
+                    }
+                    _ => refused.into_response(),
+                }
+            }),
+        )
+        .route(
+            "/spotify/api/me",
+            get(|headers: HeaderMap| async move {
+                if !authorized(&headers, "Bearer user-token") {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(json!({"id": "otkho", "display_name": "Otkho"})).into_response()
             }),
         )
         .route(
             "/spotify/api/tracks/{id}",
             get(|UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
-                if !authorized(&headers, "Bearer sp-token") {
+                if !authorized(&headers, "Bearer sp-token") && !authorized(&headers, "Bearer user-token") {
                     return StatusCode::UNAUTHORIZED.into_response();
                 }
                 Json(spotify_track(&id, "Mirror Song", "USTEST000001", 2_000)).into_response()
@@ -74,8 +101,16 @@ async fn start_mock_apis(counters: Counters) -> String {
         )
         .route(
             "/spotify/api/playlists/{id}",
-            get(|State(c): State<Counters>, UrlPath(id): UrlPath<String>| async move {
+            get(|State(c): State<Counters>, UrlPath(id): UrlPath<String>, headers: HeaderMap| async move {
                 let base = c.base.lock().unwrap().clone();
+                // Owned by the signed-in account: entries only for its token.
+                if id == "MinePlaylist" {
+                    if authorized(&headers, "Bearer user-token") {
+                        return Json(json!({"name": "Của tôi", "owner": {"display_name": "Otkho"},
+                            "items": {"total": 1, "next": null, "items": [{"track": true, "item": spotify_track("m1", "Năm", "ISRC5", 1000)}]}}));
+                    }
+                    return Json(json!({"name": "Của tôi", "owner": {"display_name": "Otkho"}}));
+                }
                 // Web API since February 2026: entries under `items`, track under `item`.
                 if id == "NewFormat" {
                     return Json(json!({"name": "Mới", "owner": {"display_name": "me"},
@@ -130,7 +165,7 @@ async fn start_mock_apis(counters: Counters) -> String {
         )
         .route(
             "/spotify/api/search",
-            get(|Query(query): Query<std::collections::HashMap<String, String>>| async move {
+            get(|Query(query): Query<HashMap<String, String>>| async move {
                 // Development Mode apps get at most 10 results since 2026; more is a 400.
                 let limit: usize = query.get("limit").and_then(|l| l.parse().ok()).unwrap_or(5);
                 if limit > 10 {
@@ -449,4 +484,69 @@ async fn plays_mirrored_track_through_matched_youtube_video() {
 
     let mirror = node.ctx.cache.index().get_mirror("isrc", "USTEST000001").await.unwrap();
     assert_eq!(mirror.map(|m| m.0).as_deref(), Some("bbbbbbbbbbb"));
+}
+
+async fn load_message(node: &TestNode, identifier: &str) -> String {
+    let result = load(node, identifier).await;
+    assert_eq!(result["loadType"], "error", "{result}");
+    result["data"]["message"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn signed_in_account_reads_its_own_playlists() {
+    let base = start_mock_apis(Counters::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let ytdlp = FakeYtDlp::install(dir.path(), TWO_CANDIDATES, 1.0);
+    let node = mirror_node(&base, &ytdlp.path).await;
+    let cfg = node.ctx.config.sources.spotify.clone();
+
+    // Without a signed-in account Spotify withholds the entries; the error says what to do.
+    let message = load_message(&node, "https://open.spotify.com/playlist/MinePlaylist").await;
+    assert!(message.contains("rust-link spotify-login"), "{message}");
+
+    // `spotify-login` after the consent page: tokens, profile, file with owner-only access.
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let path = cfg.user_credentials_file.clone();
+    let login = rust_link::source::mirror::spotify_login::complete_login(&http, &cfg, "good-code", REDIRECT, &path)
+        .await
+        .unwrap();
+    assert_eq!((login.label(), login.refresh_token.as_str()), ("Otkho", "rt-1"));
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    assert!(
+        rust_link::source::mirror::spotify_login::complete_login(&http, &cfg, "bad-code", REDIRECT, &path)
+            .await
+            .is_err()
+    );
+
+    // The running node picks the account up on its next request, no restart.
+    let mine = load(&node, "https://open.spotify.com/playlist/MinePlaylist").await;
+    assert_eq!(mine["loadType"], "playlist", "{mine}");
+    assert_eq!(mine["data"]["tracks"][0]["info"]["title"], "Năm");
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored["refreshToken"], "rt-2", "rotated refresh token is kept");
+
+    // Other people's playlists stay closed, and the error names the account.
+    let message = load_message(&node, "https://open.spotify.com/playlist/OthersPlaylist").await;
+    assert!(message.contains("(Otkho)"), "{message}");
+}
+
+#[tokio::test]
+async fn revoked_sign_in_falls_back_to_the_app() {
+    let base = start_mock_apis(Counters::default()).await;
+    let dir = tempfile::tempdir().unwrap();
+    let ytdlp = FakeYtDlp::install(dir.path(), TWO_CANDIDATES, 1.0);
+    let node = mirror_node(&base, &ytdlp.path).await;
+    std::fs::write(
+        &node.ctx.config.sources.spotify.user_credentials_file,
+        r#"{"refreshToken": "revoked", "displayName": "Old"}"#,
+    )
+    .unwrap();
+
+    let search = load(&node, "spsearch:hit").await;
+    assert_eq!(search["loadType"], "search", "the app token still works: {search}");
+    let message = load_message(&node, "https://open.spotify.com/playlist/MinePlaylist").await;
+    assert!(message.contains("rust-link spotify-login"), "{message}");
 }

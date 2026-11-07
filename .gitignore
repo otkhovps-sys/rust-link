@@ -1,6 +1,7 @@
 /target
 /data
 config/onedrive.json
+config/spotify.json
 *.part
 /dist
 /logs

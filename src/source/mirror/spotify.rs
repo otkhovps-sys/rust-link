@@ -3,17 +3,20 @@
 //! Since the February 2026 Web API changes (applied to existing apps on 2026-03-09), apps in
 //! Development Mode get playlist entries only for playlists the signed-in user owns or
 //! collaborates on, artist top tracks are gone and searches return at most 10 results. A
-//! client credentials app has no user, so playlist links return metadata without tracks.
+//! client credentials app has no user, so playlist links return metadata without tracks,
+//! unless an account was signed in with `rust-link spotify-login` (see [`super::spotify_login`]).
 
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use reqwest::StatusCode;
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tracing::debug;
+use tracing::{debug, info, warn};
 use url::Url;
 
-use super::{search_result, single, text, track_info, MirrorCollection, MirrorTrack};
+use super::{
+    search_result, single, spotify_login, spotify_login::SpotifyLogin, text, track_info, MirrorCollection, MirrorTrack,
+};
 use crate::{api::models::LoadResult, config::SpotifyConfig, source::SourceError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,24 @@ pub struct SpotifyClient {
     cfg: SpotifyConfig,
     http: reqwest::Client,
     token: Mutex<Option<(String, Instant)>>,
+    user: Mutex<UserSession>,
+}
+
+/// The account signed in with `spotify-login`, read again whenever its file changes.
+#[derive(Default)]
+struct UserSession {
+    login: Option<SpotifyLogin>,
+    access: Option<(String, Instant)>,
+    /// Modification time of the credentials file when it was last read.
+    seen: Option<SystemTime>,
+}
+
+fn expiry(expires_in: Option<u64>) -> Instant {
+    Instant::now() + Duration::from_secs(expires_in.unwrap_or(3600).saturating_sub(60).max(30))
+}
+
+async fn modified(path: &std::path::Path) -> Option<SystemTime> {
+    tokio::fs::metadata(path).await.ok().and_then(|m| m.modified().ok())
 }
 
 impl SpotifyClient {
@@ -74,6 +95,78 @@ impl SpotifyClient {
             cfg,
             http,
             token: Mutex::new(None),
+            user: Mutex::new(UserSession::default()),
+        }
+    }
+
+    /// Name of the signed-in Spotify account, if any.
+    pub async fn signed_in_as(&self) -> Option<String> {
+        let mut user = self.user.lock().await;
+        self.reload_login(&mut user).await;
+        user.login.as_ref().map(|l| l.label().to_string())
+    }
+
+    async fn reload_login(&self, user: &mut UserSession) {
+        let path = &self.cfg.user_credentials_file;
+        let seen = modified(path).await;
+        if seen == user.seen {
+            return;
+        }
+        user.seen = seen;
+        user.access = None;
+        user.login = match seen {
+            None => None,
+            Some(_) => match SpotifyLogin::load(path).await {
+                Ok(login) => {
+                    info!(account = login.label(), "Spotify: using the signed-in account");
+                    Some(login)
+                }
+                Err(e) => {
+                    warn!(error = %format!("{e:#}"), "Spotify: ignoring the sign-in file");
+                    None
+                }
+            },
+        };
+    }
+
+    /// Access token of the signed-in account. On failure (sign-in revoked) the account is
+    /// dropped until the file changes, and requests go out as the app again.
+    async fn user_token(&self, force_refresh: bool) -> Option<String> {
+        let mut user = self.user.lock().await;
+        self.reload_login(&mut user).await;
+        let login = user.login.clone()?;
+        if let (Some((token, expires)), false) = (&user.access, force_refresh) {
+            if Instant::now() < *expires {
+                return Some(token.clone());
+            }
+        }
+        match spotify_login::refresh(&self.http, &self.cfg, &login.refresh_token).await {
+            Ok(tokens) => {
+                if let Some(rotated) = tokens.refresh_token.filter(|t| *t != login.refresh_token) {
+                    let updated = SpotifyLogin {
+                        refresh_token: rotated,
+                        ..login
+                    };
+                    let path = &self.cfg.user_credentials_file;
+                    match updated.save(path).await {
+                        Ok(()) => user.seen = modified(path).await,
+                        Err(e) => warn!(error = %e, "Spotify: cannot store the new refresh token"),
+                    }
+                    user.login = Some(updated);
+                }
+                user.access = Some((tokens.access_token.clone(), expiry(tokens.expires_in)));
+                Some(tokens.access_token)
+            }
+            Err(e) => {
+                warn!(
+                    account = login.label(),
+                    error = %e,
+                    "Spotify sign-in stopped working, continuing without it; run `rust-link spotify-login` again"
+                );
+                user.login = None;
+                user.access = None;
+                None
+            }
         }
     }
 
@@ -82,6 +175,14 @@ impl SpotifyClient {
     }
 
     async fn token(&self, force_refresh: bool) -> Result<String, SourceError> {
+        if let Some(token) = self.user_token(force_refresh).await {
+            return Ok(token);
+        }
+        self.app_token(force_refresh).await
+    }
+
+    /// Client credentials token of the app itself.
+    async fn app_token(&self, force_refresh: bool) -> Result<String, SourceError> {
         let mut cached = self.token.lock().await;
         if let (Some((token, expires)), false) = (&*cached, force_refresh) {
             if Instant::now() < *expires {
@@ -104,9 +205,7 @@ impl SpotifyClient {
         let body: Value = response.json().await?;
         let token = text(&body, "access_token")
             .ok_or_else(|| SourceError::Parse("Spotify token response without access_token".into()))?;
-        let lifetime = body.get("expires_in").and_then(Value::as_u64).unwrap_or(3600);
-        let expires = Instant::now() + Duration::from_secs(lifetime.saturating_sub(60).max(30));
-        *cached = Some((token.clone(), expires));
+        *cached = Some((token.clone(), expiry(body.get("expires_in").and_then(Value::as_u64))));
         Ok(token)
     }
 
@@ -230,10 +329,17 @@ impl SpotifyClient {
         let playlist = self.get(&format!("/playlists/{id}?{}", self.market())).await?;
         let name = text(&playlist, "name").unwrap_or_else(|| "Unknown playlist".into());
         let Some(entries) = playlist_entries(&playlist) else {
+            let reason = match self.signed_in_as().await {
+                Some(account) => format!(
+                    "Spotify only gives apps in Development Mode the tracks of playlists owned by or shared \
+                     with the signed-in account ({account})"
+                ),
+                None => "since March 2026 Spotify only gives apps in Development Mode the tracks of playlists \
+                         owned by a signed-in account; run `rust-link spotify-login` to sign yours in"
+                    .to_string(),
+            };
             return Err(SourceError::Unavailable(format!(
-                "Spotify returned playlist \"{name}\" without its tracks: since March 2026 Spotify only gives \
-                 apps in Development Mode the tracks of playlists owned by the signed-in user. Track and \
-                 album links still work."
+                "Spotify returned playlist \"{name}\" without its tracks: {reason}. Track and album links still work."
             )));
         };
         let mut tracks = Vec::new();

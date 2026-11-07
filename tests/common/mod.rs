@@ -34,6 +34,7 @@ impl TestNode {
         config.cache.database = dir.path().join("cache/index.db");
         config.lavalink.player_update_interval = 1;
         config.sources.ytdlp.auto_update = false;
+        config.sources.spotify.user_credentials_file = dir.path().join("spotify.json");
         customize(&mut config);
         config.validate().unwrap();
 

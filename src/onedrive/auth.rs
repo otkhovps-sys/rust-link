@@ -170,18 +170,7 @@ impl TokenManager {
 
 /// Atomic write (temp file + rename) with owner-only permissions.
 pub async fn persist_credentials(path: &Path, creds: &OneDriveCredentials) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_vec_pretty(creds).map_err(std::io::Error::other)?;
-    tokio::fs::write(&tmp, json).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
-    }
-    tokio::fs::rename(&tmp, path).await
+    crate::util::write_private_json(path, creds).await
 }
 
 #[derive(Debug, Deserialize)]

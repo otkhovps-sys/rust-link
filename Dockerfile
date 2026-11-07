@@ -29,10 +29,12 @@ COPY --from=build /usr/local/bin/rust-link /opt/rust-link/rust-link
 COPY config/application.yml /opt/rust-link/application.yml
 # Credentials OneDrive, yt-dlp và plugin nằm trên volume /data để còn lại sau khi tạo lại container.
 RUN sed -i -e 's#credentialsFile: config/onedrive.json#credentialsFile: /data/onedrive.json#' \
+           -e 's#userCredentialsFile: config/spotify.json#userCredentialsFile: /data/spotify.json#' \
            -e 's#managedDir: ./bin#managedDir: /data/bin#' \
            -e 's#directory: ./plugins#directory: /data/plugins#' /opt/rust-link/application.yml \
  && grep -q 'managedDir: /data/bin' /opt/rust-link/application.yml \
- && grep -q 'directory: /data/plugins' /opt/rust-link/application.yml
+ && grep -q 'directory: /data/plugins' /opt/rust-link/application.yml \
+ && grep -q 'userCredentialsFile: /data/spotify.json' /opt/rust-link/application.yml
 WORKDIR /opt/rust-link
 USER rustlink
 VOLUME ["/data"]

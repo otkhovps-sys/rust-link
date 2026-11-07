@@ -341,9 +341,29 @@ Giới hạn phía Spotify với app ở **Development Mode** (mọi app tự t�
 | Bài (`/track/...`), `spsearch:` | Dùng được. Tìm kiếm trả tối đa 10 kết quả |
 | Album (`/album/...`) | Dùng được |
 | Nghệ sĩ (`/artist/...`) | Spotify bỏ API top tracks; node thay bằng 10 bài tìm được theo tên nghệ sĩ |
-| Playlist (`/playlist/...`) | **Không đọc được danh sách bài.** Spotify chỉ trả bài của playlist thuộc người dùng đã đăng nhập, còn node đọc Spotify không qua tài khoản người dùng. Node trả lỗi ghi rõ lý do thay vì kết quả rỗng |
+| Playlist (`/playlist/...`) | Chỉ đọc được playlist mà **tài khoản đã đăng nhập** (`rust-link spotify-login`, xem bên dưới) sở hữu hoặc được mời cùng sửa. Playlist của người khác: node trả lỗi ghi rõ lý do thay vì kết quả rỗng |
 
-Ngoài ra, app ở Development Mode chỉ chạy khi chủ app có Spotify Premium, và Spotify không cho app mới đọc playlist do chính Spotify tạo (ví dụ "Today's Top Hits"). Muốn phát playlist, dùng link playlist YouTube, YouTube Music hoặc Deezer (Deezer không cần cấu hình).
+Ngoài ra, app ở Development Mode chỉ chạy khi chủ app có Spotify Premium, và Spotify không cho app mới đọc playlist do chính Spotify tạo (ví dụ "Today's Top Hits"). Với playlist của người khác, dùng link playlist YouTube, YouTube Music hoặc Deezer (Deezer không cần cấu hình), hoặc trong ứng dụng Spotify chép các bài sang một playlist của chính bạn.
+
+**Đăng nhập Spotify để đọc playlist của bạn:**
+
+1. Trên https://developer.spotify.com/dashboard, mở app, chọn **Settings** rồi **Edit**. Ở mục **Redirect URIs** thêm đúng dòng `http://127.0.0.1:8888/callback` rồi bấm **Save**. Spotify không nhận `localhost`, phải ghi `127.0.0.1`.
+2. Trong thư mục có `application.yml` (đã điền `clientId`, `clientSecret`), chạy:
+
+```bash
+./rust-link spotify-login
+```
+
+3. Trình duyệt mở trang đăng nhập Spotify. Đăng nhập bằng tài khoản có playlist cần phát rồi bấm **Agree**. Lệnh in ra `Signed in to Spotify as <tên>` và lưu refresh token vào `config/spotify.json` (gói phát hành: `spotify.json` cạnh file chạy; Docker: `/data/spotify.json`).
+4. Node đang chạy tự dùng tài khoản này từ lần gọi Spotify kế tiếp, không cần khởi động lại.
+
+Node chạy trên VPS hay trong Docker thì máy chủ không có trình duyệt: thêm `--no-browser`, mở địa chỉ lệnh in ra trên máy của bạn, đăng nhập. Trình duyệt sẽ dừng ở trang lỗi `127.0.0.1:8888`; chép nguyên địa chỉ trên thanh địa chỉ và dán vào cửa sổ lệnh đang chờ.
+
+```bash
+docker exec -it rust-link /opt/rust-link/rust-link spotify-login --no-browser
+```
+
+Đăng xuất: xóa file `spotify.json` rồi khởi động lại node. Nếu bạn thu hồi quyền của app trong tài khoản Spotify, node ghi cảnh báo và quay lại chế độ không đăng nhập (bài, album, tìm kiếm vẫn chạy). File `spotify.json` chứa refresh token của tài khoản, không chia sẻ và không đưa lên git.
 
 **Apple Music:** cần developer token MusicKit, tạo trong tài khoản Apple Developer (có phí hằng năm). Điền token vào `sources.appleMusic.mediaApiToken`. Token hết hạn tối đa sau 6 tháng, cần tạo lại.
 

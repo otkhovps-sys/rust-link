@@ -49,6 +49,7 @@ install -m 0755 "$BIN" "$STAGE/${EXE}"
 sed -e 's#directory: /data/cache #directory: ./data/cache #' \
     -e 's#database: /data/cache/index.db#database: ./data/cache/index.db#' \
     -e 's#credentialsFile: config/onedrive.json#credentialsFile: onedrive.json#' \
+    -e 's#userCredentialsFile: config/spotify.json#userCredentialsFile: spotify.json#' \
     config/application.yml > "$STAGE/application.yml"
 grep -q 'directory: ./data/cache' "$STAGE/application.yml" || { echo "cache path rewrite failed" >&2; exit 1; }
 

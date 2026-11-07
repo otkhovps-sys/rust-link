@@ -40,6 +40,13 @@ enum Command {
         #[arg(long, default_value = "offline_access Files.ReadWrite")]
         scope: String,
     },
+    /// Sign a Spotify account in, so the node can read the playlists it owns or
+    /// collaborates on (Spotify withholds the tracks of other playlists from new apps).
+    SpotifyLogin {
+        /// Only print the sign-in address instead of opening it in the browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// Validate the configuration and exit.
     CheckConfig,
     /// Update yt-dlp now (managed download, or `yt-dlp -U`) and exit.
@@ -84,6 +91,18 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Plugin { action } => plugin_command(&config, action),
+        Command::SpotifyLogin { no_browser } => {
+            let cfg = &config.sources.spotify;
+            let login = rust_link::source::mirror::spotify_login::interactive_login(cfg, !no_browser).await?;
+            println!();
+            println!("Signed in to Spotify as {}.", login.label());
+            println!(
+                "Saved to {}. A running node uses it from its next Spotify request.",
+                cfg.user_credentials_file.display()
+            );
+            println!("Playlists this account owns or collaborates on can now be loaded.");
+            Ok(())
+        }
         Command::CheckConfig => {
             println!("{config:#?}");
             println!("configuration OK");

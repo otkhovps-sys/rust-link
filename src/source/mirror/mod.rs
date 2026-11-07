@@ -5,6 +5,7 @@
 pub mod applemusic;
 pub mod deezer;
 pub mod spotify;
+pub mod spotify_login;
 
 use std::time::Duration;
 

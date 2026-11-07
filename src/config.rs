@@ -302,6 +302,11 @@ pub struct SpotifyConfig {
     pub search_limit: usize,
     pub api_url: String,
     pub accounts_url: String,
+    /// Spotify account signed in with `rust-link spotify-login` (refresh token). Its
+    /// playlists, and the ones shared with it, can be read.
+    pub user_credentials_file: PathBuf,
+    /// Redirect URI of the sign-in; add the same URI to the app in the Spotify dashboard.
+    pub login_redirect_uri: String,
 }
 
 impl Default for SpotifyConfig {
@@ -316,6 +321,8 @@ impl Default for SpotifyConfig {
             search_limit: 10,
             api_url: "https://api.spotify.com/v1".into(),
             accounts_url: "https://accounts.spotify.com".into(),
+            user_credentials_file: PathBuf::from("config/spotify.json"),
+            login_redirect_uri: "http://127.0.0.1:8888/callback".into(),
         }
     }
 }

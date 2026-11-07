@@ -66,6 +66,9 @@ sources:
     countryCode: VN
     playlistLoadLimit: 6         # số trang 100 bài lấy từ playlist
     albumLoadLimit: 6            # số trang 50 bài lấy từ album
+    # Đăng nhập tài khoản Spotify để đọc playlist của tài khoản đó: rust-link spotify-login
+    userCredentialsFile: config/spotify.json
+    loginRedirectUri: http://127.0.0.1:8888/callback   # thêm đúng URI này vào app trên Spotify dashboard
   appleMusic:
     enabled: true
     mediaApiToken: ""            # MusicKit developer token từ tài khoản Apple Developer

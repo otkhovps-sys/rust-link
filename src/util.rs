@@ -44,6 +44,22 @@ pub fn truncate_utf8(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// Atomic JSON write (temp file + rename) with owner-only permissions, for credentials.
+pub async fn write_private_json(path: &std::path::Path, value: &impl serde::Serialize) -> std::io::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let json = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    tokio::fs::write(&tmp, json).await?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).await?;
+    }
+    tokio::fs::rename(&tmp, path).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

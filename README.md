@@ -31,7 +31,7 @@
 - **yt-dlp tự quản lý:** node tự tải bản yt-dlp chính thức (kiểm SHA-256) và tự cập nhật theo lịch, vì YouTube đổi liên tục và yt-dlp cũ là hỏng phát nhạc.
 - **Bất đồng bộ từ đầu đến cuối:** tokio và axum xử lý mạng; mỗi bài có thread decode riêng, luồng gửi UDP giữ đúng nhịp 20 ms mà không chặn runtime.
 - **Opus passthrough:** gói Opus 48 kHz của YouTube được gửi thẳng tới Discord, không decode và không encode lại khi volume 100 và không bật filter.
-- **Link Spotify, Apple Music, Deezer kiểu LavaSrc:** track, album, playlist, nghệ sĩ và `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`. Lúc phát, node tìm bản YouTube theo ISRC rồi theo tên bài, có so độ dài, và nhớ kết quả trong SQLite. Từ tháng 3/2026, Spotify không còn trả danh sách bài của playlist cho app ở Development Mode; bài, album và tìm kiếm Spotify vẫn dùng được (chi tiết trong [HUONG_DAN.md](docs/HUONG_DAN.md#8-link-spotify-apple-music-deezer)).
+- **Link Spotify, Apple Music, Deezer kiểu LavaSrc:** track, album, playlist, nghệ sĩ và `spsearch:`, `amsearch:`, `dzsearch:`, `dzisrc:`. Lúc phát, node tìm bản YouTube theo ISRC rồi theo tên bài, có so độ dài, và nhớ kết quả trong SQLite. Từ tháng 3/2026, Spotify chỉ trả danh sách bài của playlist thuộc tài khoản đã đăng nhập: chạy `rust-link spotify-login` một lần để đọc playlist của bạn; bài, album và tìm kiếm Spotify không cần đăng nhập (chi tiết trong [HUONG_DAN.md](docs/HUONG_DAN.md#8-link-spotify-apple-music-deezer)).
 - **Phát trực tiếp khi không nên cache:** live YouTube và radio `.m3u8` qua HLS (tự tách audio từ MPEG-TS); bài dài hơn 2 giờ hoặc file quá lớn đọc bằng HTTP Range, vẫn tua được.
 - **Nhanh hơn ở những chỗ bot hay chờ:** kết quả tìm kiếm được nhớ 6 giờ, playlist được tải trước vài bài kế tiếp, filter và âm lượng có hiệu lực trong khoảng 20 ms thay vì chờ bộ đệm 0,4 giây, yt-dlp dùng bản thư mục nên mỗi lần gọi nhanh gấp đôi (đo được 0,45 s so với 1 s).
 - **Một luồng live, nhiều server:** các server phát cùng một live stream với cùng filter và âm lượng dùng chung một lần tải, giải mã và mã hóa, nên bot radio 24/7 không tốn thêm CPU khi có thêm server.
@@ -233,6 +233,7 @@ Node tìm file cấu hình theo thứ tự: `--config`, `application.yml` hoặc
 | `sources.ytdlp.path` | `managed` (gói và Docker) | `managed`: node tự tải yt-dlp; hoặc đường dẫn tới yt-dlp có sẵn |
 | `sources.ytdlp.autoUpdate` / `updateIntervalHours` | `true` / `24` | Tự cập nhật yt-dlp theo lịch |
 | `sources.spotify.clientId` / `clientSecret` | trống | Bật link Spotify (app miễn phí tại developer.spotify.com) |
+| `sources.spotify.userCredentialsFile` | `config/spotify.json` | Tài khoản Spotify đăng nhập bằng `rust-link spotify-login`, để đọc playlist của tài khoản đó |
 | `sources.appleMusic.mediaApiToken` | trống | Bật link Apple Music (MusicKit developer token) |
 | `sources.deezer.enabled` | `true` | Link Deezer, không cần tài khoản |
 | `sources.mirrorProviders` | ISRC rồi tên bài | Cách tìm bản YouTube cho Spotify, Apple Music, Deezer |
@@ -306,7 +307,7 @@ Plugin có thể thêm tiền tố identifier và route REST riêng, ví dụ `r
 ```text
 .
 ├── src/
-│   ├── main.rs              # CLI: serve | onedrive-login | check-config | update-ytdlp | plugin new/list
+│   ├── main.rs              # CLI: serve | onedrive-login | spotify-login | check-config | update-ytdlp | plugin new/list
 │   ├── config.rs            # application.yml, khóa tương thích Lavalink, biến môi trường
 │   ├── node.rs, stats.rs    # khởi tạo node, số liệu op "stats"
 │   ├── api/                 # REST + WebSocket Lavalink v4, định dạng lỗi, codec track Lavaplayer
