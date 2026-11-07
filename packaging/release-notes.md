@@ -2,12 +2,15 @@ Audio node tương thích **Lavalink v4**, viết bằng Rust, có cache audio c
 
 ## Tính năng mới
 
-- **Plugin viết bằng ngôn ngữ nào cũng được:** plugin là chương trình riêng (Python, Node.js, Go...) nói chuyện với node bằng JSON qua stdin/stdout. Plugin thêm được nguồn nhạc theo tiền tố hoặc mẫu URL, chọn nơi phát bài (URL kèm header, file trên máy chủ, hoặc chuyển sang bài khác), nhận sự kiện websocket, thêm route REST riêng và gọi lại REST của node. Plugin bị crash được tự chạy lại; trạng thái xem ở `GET /v4/rustlink/plugins`, plugin đang chạy hiện trong `/v4/info`.
-- **Lệnh `rust-link plugin new <tên> [--lang node]`** tạo sẵn khung plugin kèm SDK Python hoặc Node.js (không cần cài thư viện); `rust-link plugin list` liệt kê plugin sẽ được chạy.
-- **Hai plugin mẫu** trong `examples/plugins/`: `radio` (Python, đài radio theo tên) và `local-files` (Node.js, phát file nhạc trong thư mục trên máy chủ). Hướng dẫn đầy đủ trong `PLUGINS.md`.
-- **Link YouTube Mix (`list=RD...`) thành playlist:** trước đây chỉ phát một video, nay trả về playlist 25 bài đầu với video trong link được chọn. Link radio của YouTube Music (`list=RDAMVM...`) cũng vậy. Đổi số bài bằng `sources.youtubeMixLimit` (0 = chỉ phát video trong link như cũ).
+- **Đăng nhập Spotify để đọc playlist:** từ tháng 3/2026, Spotify chỉ trả danh sách bài của playlist thuộc tài khoản đã đăng nhập. Lệnh mới `rust-link spotify-login` đăng nhập tài khoản Spotify một lần (mở trình duyệt, hoặc dán địa chỉ khi node chạy trên VPS/Docker) và lưu refresh token vào `spotify.json`. Node đang chạy tự dùng tài khoản này, không cần khởi động lại, và đọc được playlist mà tài khoản đó sở hữu hoặc được mời cùng sửa.
+- **Theo kịp thay đổi Web API Spotify 2026:**
+  - Playlist Spotify không trả danh sách bài: node báo lỗi ghi rõ lý do thay vì `empty`, nên bot không còn báo nhầm "không tìm thấy".
+  - Đọc được định dạng playlist mới (`items`, `item`) lẫn định dạng cũ.
+  - Link nghệ sĩ: Spotify đã bỏ API top tracks, node thay bằng 10 bài tìm theo tên nghệ sĩ.
+  - `spsearch:` tự giới hạn 10 kết quả, mức tối đa mới của Spotify (trước đây đặt cao hơn sẽ bị lỗi 400).
+  - Lỗi 403 ghi rõ app ở Development Mode cần chủ app có Spotify Premium.
 
-Mọi tính năng của 0.2.0 (đủ 10 filter, link Spotify/Apple Music/Deezer, live stream, tự cập nhật yt-dlp...) vẫn giữ nguyên.
+Mọi tính năng của 0.2.1 (plugin, YouTube Mix thành playlist...) và 0.2.0 vẫn giữ nguyên.
 
 ## Tải về
 
@@ -30,8 +33,11 @@ Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 ## Lưu ý
 
-- Nâng cấp từ 0.2.0: chỉ cần thay file chạy. Không có plugin nào được bật sẵn; node chạy plugin trong thư mục `plugins/` cạnh file chạy (Docker: `/data/plugins`).
+- Nâng cấp từ 0.2.0 hoặc 0.2.1: chỉ cần thay file chạy, các khóa cấu hình mới đều có giá trị mặc định.
+- Đọc playlist Spotify: trên Spotify dashboard, thêm Redirect URI `http://127.0.0.1:8888/callback` cho app, rồi chạy `rust-link spotify-login` trong thư mục có `application.yml`. Playlist của người khác vẫn không đọc được, đó là giới hạn của Spotify. Hướng dẫn chi tiết ở mục 8 của `HUONG_DAN.md`.
+- `spotify.json` chứa refresh token của tài khoản Spotify: không chia sẻ file này.
+- Không có plugin nào được bật sẵn; node chạy plugin trong thư mục `plugins/` cạnh file chạy (Docker: `/data/plugins`).
 - Plugin Python cần Python 3.9+, plugin Node.js cần Node.js 16+ trên máy chủ. Image Docker không có sẵn hai runtime này; `PLUGINS.md` có Dockerfile mẫu để thêm.
 - Nâng cấp từ 0.1.x: thay file chạy, giữ nguyên thư mục `data/`. Chỉ mục SQLite tự thêm các bảng mới khi khởi động; các khóa cấu hình mới đều có giá trị mặc định.
 - `application.yml` cũ có `sources.ytdlp.path: yt-dlp` vẫn chạy như trước; node gọi `yt-dlp -U` theo lịch. Đổi thành `managed` để node tự quản lý yt-dlp.
-- Phần ghép YouTube cho Spotify/Apple Music/Deezer và phần live YouTube đã được test với API và yt-dlp giả lập; Deezer và link YouTube Mix đã chạy thử với dịch vụ thật.
+- Phần Spotify (kể cả đăng nhập), ghép YouTube cho Spotify/Apple Music/Deezer và live YouTube đã được test với API và yt-dlp giả lập; Deezer và link YouTube Mix đã chạy thử với dịch vụ thật.

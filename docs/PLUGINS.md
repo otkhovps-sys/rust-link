@@ -225,7 +225,7 @@ Lệnh đầu tiên sau khi khởi động.
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{
   "protocol":1,"name":"radio",
   "config":{"stations":{"lofi":{"url":"https://radio.example/lofi.mp3"}}},
-  "node":{"name":"rust-link","version":"0.2.1","lavalinkApi":"4.1.1","address":"0.0.0.0","port":2333}}}
+  "node":{"name":"rust-link","version":"0.2.2","lavalinkApi":"4.1.1","address":"0.0.0.0","port":2333}}}
 ```
 
 Kết quả là bảng khai báo khả năng (mọi trường đều tùy chọn):
