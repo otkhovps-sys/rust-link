@@ -5,7 +5,10 @@
 //!   `sources.ytdlp.managedDir`. It uses the one-directory release (`yt-dlp_linux.zip`,
 //!   ...), which starts about twice as fast as the single-file build because it does not
 //!   unpack itself on every run. It is installed on first start and replaced when the
-//!   release checksum (`SHA2-256SUMS`) no longer matches the installed archive.
+//!   release checksum (`SHA2-256SUMS`) no longer matches the installed archive. Every
+//!   install is started once (`--version`): a build that does not start is rolled back,
+//!   and an installed build that stopped starting (files removed by an antivirus, a
+//!   damaged copy) is downloaded again.
 //! * any other path: `yt-dlp -U` (works for the standalone builds; pip installs are
 //!   reported with a hint instead).
 
@@ -31,6 +34,7 @@ const BUNDLE_DIR: &str = "yt-dlp-bundle";
 /// Checksum of the release archive the bundle came from.
 const MARKER: &str = ".release-sha256";
 const SELF_UPDATE_TIMEOUT: Duration = Duration::from_secs(180);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateOutcome {
@@ -40,6 +44,8 @@ pub enum UpdateOutcome {
     Installed { version: String },
     /// Managed binary replaced by a newer release.
     Updated { version: String },
+    /// Managed binary no longer started and was downloaded again.
+    Repaired { version: String },
     /// Result line of `yt-dlp -U` for a binary rust-link does not manage.
     SelfUpdate { message: String },
 }
@@ -50,6 +56,7 @@ impl std::fmt::Display for UpdateOutcome {
             UpdateOutcome::UpToDate { version } => write!(f, "yt-dlp {version} is up to date"),
             UpdateOutcome::Installed { version } => write!(f, "installed yt-dlp {version}"),
             UpdateOutcome::Updated { version } => write!(f, "updated yt-dlp to {version}"),
+            UpdateOutcome::Repaired { version } => write!(f, "reinstalled yt-dlp {version}"),
             UpdateOutcome::SelfUpdate { message } => write!(f, "{message}"),
         }
     }
@@ -148,16 +155,30 @@ fn expected_sha256(sums: &str, asset: &str) -> Option<String> {
     })
 }
 
-async fn version_of(program: &Path) -> String {
+/// Start the executable once. Succeeds only when it and its support files load, which
+/// is what a damaged or half-removed bundle fails at.
+async fn probe(program: &Path) -> anyhow::Result<String> {
     let output = Command::new(program)
         .arg("--version")
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .output();
-    match tokio::time::timeout(Duration::from_secs(60), output).await {
-        Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        _ => "unknown version".into(),
+    let output = tokio::time::timeout(PROBE_TIMEOUT, output)
+        .await
+        .map_err(|_| anyhow!("{} --version timed out", program.display()))?
+        .with_context(|| format!("cannot run {}", program.display()))?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() && !version.is_empty() {
+        return Ok(version);
     }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("no output");
+    bail!("{} --version failed ({}): {reason}", program.display(), output.status)
 }
 
 fn http_client() -> anyhow::Result<reqwest::Client> {
@@ -186,10 +207,16 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
     let target = program_path(cfg);
     let existed = tokio::fs::try_exists(&target).await.unwrap_or(false);
     let installed = tokio::fs::read_to_string(bundle.join(MARKER)).await.unwrap_or_default();
-    if existed && installed.trim() == expected {
-        return Ok(UpdateOutcome::UpToDate {
-            version: version_of(&target).await,
-        });
+    let mut broken = false;
+    if existed {
+        match probe(&target).await {
+            Ok(version) if installed.trim() == expected => return Ok(UpdateOutcome::UpToDate { version }),
+            Ok(_) => {}
+            Err(error) => {
+                warn!(error = %format!("{error:#}"), "the installed yt-dlp does not start, downloading it again");
+                broken = true;
+            }
+        }
     }
 
     tokio::fs::create_dir_all(&cfg.managed_dir)
@@ -238,12 +265,27 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
             .with_context(|| format!("cannot replace {}", bundle.display()))?;
     }
     tokio::fs::rename(&staging, &bundle).await?;
+    // The new build has to start before the previous one is given up. It is started in
+    // its final place: on Windows a directory cannot be renamed right after one of its
+    // files ran, while an antivirus still holds it.
+    let version = match probe(&target).await {
+        Ok(version) => version,
+        Err(error) => {
+            let _ = tokio::fs::remove_dir_all(&bundle).await;
+            if !broken && tokio::fs::try_exists(&previous).await.unwrap_or(false) {
+                let _ = tokio::fs::rename(&previous, &bundle).await;
+            }
+            let _ = tokio::fs::remove_dir_all(&previous).await;
+            return Err(error.context(format!("the downloaded {asset} does not start")));
+        }
+    };
     let _ = tokio::fs::remove_dir_all(&previous).await;
     // Single-file build installed by earlier versions.
     let _ = tokio::fs::remove_file(cfg.managed_dir.join(local_file_name())).await;
 
-    let version = version_of(&target).await;
-    Ok(if existed {
+    Ok(if broken {
+        UpdateOutcome::Repaired { version }
+    } else if existed {
         UpdateOutcome::Updated { version }
     } else {
         UpdateOutcome::Installed { version }
@@ -298,12 +340,21 @@ pub async fn update(cfg: &YtDlpConfig) -> anyhow::Result<UpdateOutcome> {
     }
 }
 
-/// Make sure a managed yt-dlp exists before the node accepts connections.
+/// Make sure a managed yt-dlp exists and starts before the node accepts connections.
 pub async fn ensure_installed(cfg: &YtDlpConfig) -> anyhow::Result<()> {
-    if !is_managed(cfg) || tokio::fs::try_exists(program_path(cfg)).await.unwrap_or(false) {
+    if !is_managed(cfg) {
         return Ok(());
     }
-    info!(dir = %cfg.managed_dir.display(), "downloading yt-dlp (sources.ytdlp.path: managed)");
+    let program = program_path(cfg);
+    if tokio::fs::try_exists(&program).await.unwrap_or(false) {
+        match probe(&program).await {
+            Ok(_) => return Ok(()),
+            // `update` probes again, logs the reason and replaces the bundle.
+            Err(_) => info!(dir = %cfg.managed_dir.display(), "repairing yt-dlp (sources.ytdlp.path: managed)"),
+        }
+    } else {
+        info!(dir = %cfg.managed_dir.display(), "downloading yt-dlp (sources.ytdlp.path: managed)");
+    }
     let outcome = update(cfg).await?;
     info!("{outcome}");
     Ok(())

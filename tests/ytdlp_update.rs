@@ -25,8 +25,12 @@ fn fake_bundle(version: &str) -> Vec<u8> {
     let exe = zip::write::SimpleFileOptions::default().unix_permissions(0o755);
     zip.start_file("yt-dlp_linux", exe).unwrap();
     // The script checks that its support files sit next to it, as PyInstaller does.
-    let script =
-        format!("#!/bin/sh\ntest -f \"$(dirname \"$0\")/_internal/base_library.zip\" || exit 3\necho {version}\n");
+    let script = if version.is_empty() {
+        // A release that cannot start on this host.
+        "#!/bin/sh\necho 'Failed to load Python DLL' >&2\nexit 1\n".to_string()
+    } else {
+        format!("#!/bin/sh\ntest -f \"$(dirname \"$0\")/_internal/base_library.zip\" || exit 3\necho {version}\n")
+    };
     zip.write_all(script.as_bytes()).unwrap();
     zip.add_directory("_internal/", zip::write::SimpleFileOptions::default())
         .unwrap();
@@ -115,6 +119,37 @@ async fn installs_updates_and_verifies_managed_ytdlp() {
         "2099.02.02",
         "old build kept"
     );
+
+    // Support files went missing (antivirus, damaged copy): startup downloads the build again.
+    *release.corrupt_sums.lock().unwrap() = false;
+    *release.archive.lock().unwrap() = fake_bundle("2099.02.02");
+    let support = managed.join("yt-dlp-bundle/_internal/base_library.zip");
+    std::fs::remove_file(&support).unwrap();
+    ytdlp_update::ensure_installed(&cfg).await.unwrap();
+    assert!(support.exists(), "bundle reinstalled");
+    std::fs::remove_file(&support).unwrap();
+    assert_eq!(
+        ytdlp_update::update(&cfg).await.unwrap(),
+        UpdateOutcome::Repaired {
+            version: "2099.02.02".into()
+        }
+    );
+
+    // A release that does not start is rolled back to the working build.
+    *release.archive.lock().unwrap() = fake_bundle("");
+    let error = ytdlp_update::update(&cfg).await.unwrap_err();
+    let error = format!("{error:#}");
+    assert!(
+        error.contains("does not start") && error.contains("Failed to load Python DLL"),
+        "{error}"
+    );
+    let output = std::process::Command::new(&program).arg("--version").output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "2099.02.02",
+        "working build restored"
+    );
+
     let leftovers: Vec<_> = std::fs::read_dir(&managed)
         .unwrap()
         .flatten()
