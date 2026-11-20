@@ -1,16 +1,15 @@
 Audio node tương thích **Lavalink v4**, viết bằng Rust, có cache audio cục bộ với dọn dẹp LRU và tự động backup lên OneDrive.
 
-## Tính năng mới
+## Bản vá 0.2.3
 
-- **Đăng nhập Spotify để đọc playlist:** từ tháng 3/2026, Spotify chỉ trả danh sách bài của playlist thuộc tài khoản đã đăng nhập. Lệnh mới `rust-link spotify-login` đăng nhập tài khoản Spotify một lần (mở trình duyệt, hoặc dán địa chỉ khi node chạy trên VPS/Docker) và lưu refresh token vào `spotify.json`. Node đang chạy tự dùng tài khoản này, không cần khởi động lại, và đọc được playlist mà tài khoản đó sở hữu hoặc được mời cùng sửa.
-- **Theo kịp thay đổi Web API Spotify 2026:**
-  - Playlist Spotify không trả danh sách bài: node báo lỗi ghi rõ lý do thay vì `empty`, nên bot không còn báo nhầm "không tìm thấy".
-  - Đọc được định dạng playlist mới (`items`, `item`) lẫn định dạng cũ.
-  - Link nghệ sĩ: Spotify đã bỏ API top tracks, node thay bằng 10 bài tìm theo tên nghệ sĩ.
-  - `spsearch:` tự giới hạn 10 kết quả, mức tối đa mới của Spotify (trước đây đặt cao hơn sẽ bị lỗi 400).
-  - Lỗi 403 ghi rõ app ở Development Mode cần chủ app có Spotify Premium.
+Bản này sửa lỗi yt-dlp tự quản lý (`sources.ytdlp.path: managed`), không thêm tính năng mới.
 
-Mọi tính năng của 0.2.1 (plugin, YouTube Mix thành playlist...) và 0.2.0 vẫn giữ nguyên.
+- **Tự sửa yt-dlp hỏng:** mỗi lần khởi động và mỗi lần kiểm tra cập nhật, node chạy thử `yt-dlp --version`. Bản cài không khởi động được (antivirus xóa file trong `_internal`, thư mục copy lỗi) sẽ được tải lại. Trước đây YouTube lỗi mãi cho đến khi xóa tay thư mục `bin/`.
+- **Bản mới hỏng thì quay lại bản cũ:** bản yt-dlp mới tải về mà không chạy được sẽ bị bỏ, node giữ bản đang dùng và ghi lý do vào log.
+- **Không còn mất yt-dlp trên Windows khi quay lại bản cũ:** bản cũ chỉ bị xóa khi đã được đưa về chỗ thành công. Nếu Windows đang khóa file, bản cũ được giữ trong `bin/yt-dlp-bundle.old` và node tự khôi phục ở lần khởi động sau, kể cả khi không có mạng.
+- **Lần chạy đầu chậm không bị coi là hỏng:** nếu `--version` chạy quá 60 giây (antivirus đang quét), node giữ nguyên bản đang cài thay vì tải lại.
+
+Mọi tính năng của 0.2.2 (đăng nhập Spotify, theo kịp Web API Spotify 2026), 0.2.1 (plugin, YouTube Mix thành playlist) và 0.2.0 vẫn giữ nguyên.
 
 ## Tải về
 
@@ -33,7 +32,7 @@ Hướng dẫn đầy đủ nằm trong `HUONG_DAN.md` đi kèm mỗi gói.
 
 ## Lưu ý
 
-- Nâng cấp từ 0.2.0 hoặc 0.2.1: chỉ cần thay file chạy, các khóa cấu hình mới đều có giá trị mặc định.
+- Nâng cấp từ 0.2.0, 0.2.1 hoặc 0.2.2: chỉ cần thay file chạy, giữ nguyên thư mục `bin/` và `data/`, các khóa cấu hình mới đều có giá trị mặc định.
 - Đọc playlist Spotify: trên Spotify dashboard, thêm Redirect URI `http://127.0.0.1:8888/callback` cho app, rồi chạy `rust-link spotify-login` trong thư mục có `application.yml`. Playlist của người khác vẫn không đọc được, đó là giới hạn của Spotify. Hướng dẫn chi tiết ở mục 8 của `HUONG_DAN.md`.
 - `spotify.json` chứa refresh token của tài khoản Spotify: không chia sẻ file này.
 - Không có plugin nào được bật sẵn; node chạy plugin trong thư mục `plugins/` cạnh file chạy (Docker: `/data/plugins`).

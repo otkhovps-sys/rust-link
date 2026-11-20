@@ -1,6 +1,7 @@
 [package]
 name = "rust-link"
-version = "0.2.2"
+version = "0.2.3"
+authors = ["otkhovps-sys", "otkhotau"]
 edition = "2021"
 rust-version = "1.88"
 description = "Lavalink v4 compatible audio node with local LRU audio cache and OneDrive backup"

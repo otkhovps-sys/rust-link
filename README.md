@@ -414,4 +414,6 @@ RUSTLINK_TEST_YTDLP=$(which yt-dlp) cargo test --test live_youtube -- --ignored 
 
 ### Giấy phép
 
+Tác giả: [otkhovps-sys](https://github.com/otkhovps-sys) và otkhotau.
+
 Phát hành theo giấy phép [MIT](LICENSE). Các thư viện phụ thuộc giữ giấy phép riêng của chúng (ví dụ libopus dùng BSD-3-Clause).
