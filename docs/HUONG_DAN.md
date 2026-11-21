@@ -21,7 +21,7 @@ rust-link là một audio node nói chuẩn **Lavalink v4**. Bot Discord đang d
 ## 2. Chuẩn bị máy chủ
 
 - **Hệ điều hành:** Linux x86_64 hoặc ARM64 bất kỳ (ví dụ VPS Ampere miễn phí của Oracle Cloud), hoặc Windows 10/11 x86_64. Bản Linux được link tĩnh nên không phụ thuộc phiên bản glibc, đã chạy thử trên Ubuntu 18.04, Debian 11 và Alpine 3.20. Bản Windows đã có người dùng chạy thật, kể cả voice có DAVE. macOS cần tự build từ mã nguồn.
-- **yt-dlp:** không cần cài tay. Với `sources.ytdlp.path: managed` (mặc định trong gói), lần chạy đầu node tự tải bản yt-dlp chính thức cho đúng hệ điều hành vào thư mục `bin/`, kiểm tra SHA-256 theo trang release của yt-dlp, rồi tự cập nhật mỗi 24 giờ. Muốn dùng yt-dlp đã cài sẵn thì ghi đường dẫn vào `path`; khi đó node gọi `yt-dlp -U` theo lịch.
+- **yt-dlp:** không cần cài tay. Với `sources.ytdlp.path: managed` (mặc định trong gói), lần chạy đầu node tự tải bản yt-dlp chính thức cho đúng hệ điều hành vào thư mục `bin/`, kiểm tra SHA-256 theo trang release của yt-dlp, rồi tự cập nhật mỗi 24 giờ. Mỗi lần khởi động, node chạy thử `yt-dlp --version`: bản cài không khởi động được (thiếu file do antivirus xóa, thư mục copy lỗi) sẽ được tải lại, và bản mới tải về mà không chạy được thì node quay lại bản đang dùng. Nếu `--version` chỉ chạy quá lâu (antivirus đang quét lần chạy đầu) thì node giữ nguyên bản đang cài chứ không tải lại. Bản cũ chỉ bị xóa khi đã được đưa về chỗ cũ thành công; nếu Windows đang khóa file khiến việc quay lại chưa xong, node sẽ hoàn tất ở lần khởi động sau. Muốn dùng yt-dlp đã cài sẵn thì ghi đường dẫn vào `path`; khi đó node gọi `yt-dlp -U` theo lịch.
 - **Deno (khuyến nghị):** yt-dlp bản mới cần một JavaScript runtime để lấy đủ định dạng YouTube. Cài theo hướng dẫn tại deno.com và đặt file `deno` vào `/usr/local/bin`.
 - **Mạng:** mở cổng TCP `2333` cho bot. Node cần gửi UDP ra ngoài tới voice server của Discord.
 
@@ -45,23 +45,23 @@ Tải bản dựng sẵn tại trang Releases: https://github.com/otkhovps-sys/r
 Kiểm tra file tải về trên Linux:
 
 ```bash
-sha256sum -c rust-link-0.2.2-linux-x86_64.tar.gz.sha256
+sha256sum -c rust-link-0.2.3-linux-x86_64.tar.gz.sha256
 ```
 
 Giải nén gói `rust-link-<version>-linux-x86_64.tar.gz`:
 
 ```bash
-tar -xzf rust-link-0.2.2-linux-x86_64.tar.gz
+tar -xzf rust-link-0.2.3-linux-x86_64.tar.gz
 ```
 
 ```bash
-cd rust-link-0.2.2-linux-x86_64
+cd rust-link-0.2.3-linux-x86_64
 ```
 
 Nội dung thư mục:
 
 ```text
-rust-link-0.2.2-linux-x86_64/
+rust-link-0.2.3-linux-x86_64/
 ├── rust-link               # file chạy duy nhất
 ├── application.yml         # cấu hình, giống application.yml của Lavalink
 ├── onedrive.example.json   # mẫu credentials OneDrive
@@ -100,7 +100,7 @@ sudo useradd -r -d /opt/rust-link -s /usr/sbin/nologin rustlink
 ```
 
 ```bash
-sudo cp -r rust-link-0.2.2-linux-x86_64 /opt/rust-link
+sudo cp -r rust-link-0.2.3-linux-x86_64 /opt/rust-link
 ```
 
 ```bash
@@ -215,14 +215,14 @@ TARGET=aarch64-unknown-linux-musl scripts/package.sh
 Workflow `.github/workflows/release.yml` chạy test, build ba gói (Linux x86_64, Linux ARM64, Windows) rồi đăng lên Releases với tag `v<version>` lấy từ `Cargo.toml`, sau đó đẩy image Docker amd64 + arm64 lên `ghcr.io`. Có hai cách kích hoạt:
 
 - **Thủ công:** vào tab **Actions** trên GitHub, chọn workflow **Release**, bấm **Run workflow**. Tag được tạo trên commit đã chọn.
-- **Bằng tag:** push tag khớp phiên bản, ví dụ `v0.2.2`.
+- **Bằng tag:** push tag khớp phiên bản, ví dụ `v0.2.3`.
 
 ```bash
-git tag v0.2.2
+git tag v0.2.3
 ```
 
 ```bash
-git push origin v0.2.2
+git push origin v0.2.3
 ```
 
 Workflow từ chối chạy nếu Release cho phiên bản đó đã tồn tại. Muốn phát hành bản mới, tăng `version` trong `Cargo.toml` trước.

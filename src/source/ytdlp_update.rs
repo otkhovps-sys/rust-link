@@ -5,13 +5,20 @@
 //!   `sources.ytdlp.managedDir`. It uses the one-directory release (`yt-dlp_linux.zip`,
 //!   ...), which starts about twice as fast as the single-file build because it does not
 //!   unpack itself on every run. It is installed on first start and replaced when the
-//!   release checksum (`SHA2-256SUMS`) no longer matches the installed archive.
+//!   release checksum (`SHA2-256SUMS`) no longer matches the installed archive. Every
+//!   install is started once (`--version`): a build that does not start is rolled back,
+//!   and an installed build that stopped starting (files removed by an antivirus, a
+//!   damaged copy) is downloaded again. A `--version` that only runs out of time is
+//!   slow, not broken: the installed build is kept. The previous build is deleted only
+//!   once it is back in place, so a rollback Windows could not finish is completed on
+//!   the next start.
 //! * any other path: `yt-dlp -U` (works for the standalone builds; pip installs are
 //!   reported with a hint instead).
 
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -31,6 +38,19 @@ const BUNDLE_DIR: &str = "yt-dlp-bundle";
 /// Checksum of the release archive the bundle came from.
 const MARKER: &str = ".release-sha256";
 const SELF_UPDATE_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long `--version` may take. The first start of a fresh build on Windows can be
+/// slow while an antivirus scans it, so running out of time is not taken as broken.
+static PROBE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(60_000);
+
+/// Shorten the `--version` timeout (tests).
+#[doc(hidden)]
+pub fn set_probe_timeout(timeout: Duration) {
+    PROBE_TIMEOUT_MS.store(timeout.as_millis() as u64, Ordering::Relaxed);
+}
+
+fn probe_timeout() -> Duration {
+    Duration::from_millis(PROBE_TIMEOUT_MS.load(Ordering::Relaxed))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateOutcome {
@@ -40,6 +60,8 @@ pub enum UpdateOutcome {
     Installed { version: String },
     /// Managed binary replaced by a newer release.
     Updated { version: String },
+    /// Managed binary no longer started and was downloaded again.
+    Repaired { version: String },
     /// Result line of `yt-dlp -U` for a binary rust-link does not manage.
     SelfUpdate { message: String },
 }
@@ -50,6 +72,7 @@ impl std::fmt::Display for UpdateOutcome {
             UpdateOutcome::UpToDate { version } => write!(f, "yt-dlp {version} is up to date"),
             UpdateOutcome::Installed { version } => write!(f, "installed yt-dlp {version}"),
             UpdateOutcome::Updated { version } => write!(f, "updated yt-dlp to {version}"),
+            UpdateOutcome::Repaired { version } => write!(f, "reinstalled yt-dlp {version}"),
             UpdateOutcome::SelfUpdate { message } => write!(f, "{message}"),
         }
     }
@@ -148,15 +171,105 @@ fn expected_sha256(sums: &str, asset: &str) -> Option<String> {
     })
 }
 
-async fn version_of(program: &Path) -> String {
+/// Result of starting the executable once.
+enum Probe {
+    /// It started and printed its version.
+    Started(String),
+    /// It did not finish in time. Slow, not necessarily broken.
+    TimedOut,
+    /// It could not start: missing support files, a damaged copy, a wrong build.
+    Failed(anyhow::Error),
+}
+
+/// Start the executable once. Succeeds only when it and its support files load, which
+/// is what a damaged or half-removed bundle fails at.
+async fn probe(program: &Path) -> Probe {
     let output = Command::new(program)
         .arg("--version")
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .output();
-    match tokio::time::timeout(Duration::from_secs(60), output).await {
-        Ok(Ok(out)) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        _ => "unknown version".into(),
+    let output = match tokio::time::timeout(probe_timeout(), output).await {
+        Err(_) => return Probe::TimedOut,
+        Ok(Err(e)) => return Probe::Failed(anyhow::Error::new(e).context(format!("cannot run {}", program.display()))),
+        Ok(Ok(output)) => output,
+    };
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() && !version.is_empty() {
+        return Probe::Started(version);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let reason = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("no output");
+    Probe::Failed(anyhow!(
+        "{} --version failed ({}): {reason}",
+        program.display(),
+        output.status
+    ))
+}
+
+/// Remove a directory, retrying for a few seconds: on Windows an antivirus can hold
+/// files of a program that just ran.
+async fn remove_dir_retrying(dir: &Path) -> std::io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match tokio::fs::remove_dir_all(dir).await {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if attempt >= 5 => return Err(e),
+            Err(_) => {}
+        }
+        attempt += 1;
+        tokio::time::sleep(Duration::from_millis(500 * attempt)).await;
+    }
+}
+
+/// Put the previous build back in place of `bundle`. `previous` is only given up once
+/// it has been moved back, so a failure leaves it on disk for the next attempt.
+async fn restore_previous(bundle: &Path, previous: &Path) -> anyhow::Result<()> {
+    remove_dir_retrying(bundle)
+        .await
+        .with_context(|| format!("cannot remove {}", bundle.display()))?;
+    let mut attempt = 0;
+    loop {
+        match tokio::fs::rename(previous, bundle).await {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt >= 5 => {
+                return Err(anyhow::Error::new(e).context(format!(
+                    "cannot move {} back to {}",
+                    previous.display(),
+                    bundle.display()
+                )))
+            }
+            Err(_) => {}
+        }
+        attempt += 1;
+        tokio::time::sleep(Duration::from_millis(500 * attempt)).await;
+    }
+}
+
+/// A previous build left behind by a rollback that could not finish is put back when
+/// the current one does not start. Runs before any download, so it works offline.
+async fn recover_previous(cfg: &YtDlpConfig) {
+    let bundle = cfg.managed_dir.join(BUNDLE_DIR);
+    let previous = cfg.managed_dir.join(format!("{BUNDLE_DIR}.old"));
+    if !tokio::fs::try_exists(&previous).await.unwrap_or(false) {
+        return;
+    }
+    let target = program_path(cfg);
+    if tokio::fs::try_exists(&target).await.unwrap_or(false) && !matches!(probe(&target).await, Probe::Failed(_)) {
+        return;
+    }
+    if !matches!(probe(&previous.join(local_file_name())).await, Probe::Started(_)) {
+        return;
+    }
+    match restore_previous(&bundle, &previous).await {
+        Ok(()) => info!(dir = %bundle.display(), "restored the previous yt-dlp build"),
+        Err(error) => warn!(error = %format!("{error:#}"), "cannot restore the previous yt-dlp build"),
     }
 }
 
@@ -171,6 +284,7 @@ fn http_client() -> anyhow::Result<reqwest::Client> {
 /// Install or refresh the managed build from `cfg.update_url`.
 async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<UpdateOutcome> {
     let client = http_client()?;
+    recover_previous(cfg).await;
     let base = cfg.update_url.trim_end_matches('/');
     let sums = client
         .get(format!("{base}/{SUMS_FILE}"))
@@ -186,10 +300,25 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
     let target = program_path(cfg);
     let existed = tokio::fs::try_exists(&target).await.unwrap_or(false);
     let installed = tokio::fs::read_to_string(bundle.join(MARKER)).await.unwrap_or_default();
-    if existed && installed.trim() == expected {
-        return Ok(UpdateOutcome::UpToDate {
-            version: version_of(&target).await,
-        });
+    let mut broken = false;
+    if existed {
+        match probe(&target).await {
+            Probe::Started(version) if installed.trim() == expected => return Ok(UpdateOutcome::UpToDate { version }),
+            Probe::Started(_) => {}
+            Probe::TimedOut if installed.trim() == expected => {
+                warn!(program = %target.display(), "yt-dlp --version timed out; keeping the installed build");
+                return Ok(UpdateOutcome::UpToDate {
+                    version: "unknown version".into(),
+                });
+            }
+            Probe::TimedOut => {
+                warn!(program = %target.display(), "yt-dlp --version timed out; updating it anyway");
+            }
+            Probe::Failed(error) => {
+                warn!(error = %format!("{error:#}"), "the installed yt-dlp does not start, downloading it again");
+                broken = true;
+            }
+        }
     }
 
     tokio::fs::create_dir_all(&cfg.managed_dir)
@@ -238,12 +367,45 @@ async fn update_managed(cfg: &YtDlpConfig, asset: &str) -> anyhow::Result<Update
             .with_context(|| format!("cannot replace {}", bundle.display()))?;
     }
     tokio::fs::rename(&staging, &bundle).await?;
+    // The new build has to start before the previous one is given up. It is started in
+    // its final place: on Windows a directory cannot be renamed right after one of its
+    // files ran, while an antivirus still holds it.
+    let fallback = !broken && tokio::fs::try_exists(&previous).await.unwrap_or(false);
+    let error = match probe(&target).await {
+        Probe::Started(version) => Ok(version),
+        // Nothing to go back to: a slow build is better than none.
+        Probe::TimedOut if !fallback => {
+            warn!(program = %target.display(), "yt-dlp --version timed out; keeping the new build");
+            Ok("unknown version".to_string())
+        }
+        Probe::TimedOut => Err(anyhow!("{} --version timed out", target.display())),
+        Probe::Failed(error) => Err(error),
+    };
+    let version = match error {
+        Ok(version) => version,
+        Err(error) => {
+            let error = error.context(format!("the downloaded {asset} does not start"));
+            if fallback {
+                if let Err(restore) = restore_previous(&bundle, &previous).await {
+                    return Err(error.context(format!(
+                        "{restore:#}; the previous build stays in {} and is restored on the next check",
+                        previous.display()
+                    )));
+                }
+                return Err(error.context("kept the previous build"));
+            }
+            let _ = remove_dir_retrying(&bundle).await;
+            let _ = tokio::fs::remove_dir_all(&previous).await;
+            return Err(error);
+        }
+    };
     let _ = tokio::fs::remove_dir_all(&previous).await;
     // Single-file build installed by earlier versions.
     let _ = tokio::fs::remove_file(cfg.managed_dir.join(local_file_name())).await;
 
-    let version = version_of(&target).await;
-    Ok(if existed {
+    Ok(if broken {
+        UpdateOutcome::Repaired { version }
+    } else if existed {
         UpdateOutcome::Updated { version }
     } else {
         UpdateOutcome::Installed { version }
@@ -298,12 +460,29 @@ pub async fn update(cfg: &YtDlpConfig) -> anyhow::Result<UpdateOutcome> {
     }
 }
 
-/// Make sure a managed yt-dlp exists before the node accepts connections.
+/// Make sure a managed yt-dlp exists and starts before the node accepts connections.
 pub async fn ensure_installed(cfg: &YtDlpConfig) -> anyhow::Result<()> {
-    if !is_managed(cfg) || tokio::fs::try_exists(program_path(cfg)).await.unwrap_or(false) {
+    if !is_managed(cfg) {
         return Ok(());
     }
-    info!(dir = %cfg.managed_dir.display(), "downloading yt-dlp (sources.ytdlp.path: managed)");
+    recover_previous(cfg).await;
+    let program = program_path(cfg);
+    if tokio::fs::try_exists(&program).await.unwrap_or(false) {
+        match probe(&program).await {
+            Probe::Started(_) => return Ok(()),
+            // Slow first start (antivirus scan): not a reason to download it again.
+            Probe::TimedOut => {
+                warn!(program = %program.display(), "yt-dlp --version timed out; keeping the installed build");
+                return Ok(());
+            }
+            // `update` probes again, logs the reason and replaces the bundle.
+            Probe::Failed(_) => {
+                info!(dir = %cfg.managed_dir.display(), "repairing yt-dlp (sources.ytdlp.path: managed)")
+            }
+        }
+    } else {
+        info!(dir = %cfg.managed_dir.display(), "downloading yt-dlp (sources.ytdlp.path: managed)");
+    }
     let outcome = update(cfg).await?;
     info!("{outcome}");
     Ok(())
